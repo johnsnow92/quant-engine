@@ -18,6 +18,7 @@ which keeps the max-position gate satisfied even when the two venue marks differ
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .guards import Order
@@ -53,6 +54,19 @@ def captured_carry_annual(inputs: PerpMarketInputs) -> float:
     return inputs.short_funding_annual - inputs.long_funding_annual
 
 
+def _require_finite(name: str, value: float, positive: bool = False) -> None:
+    """Reject NaN/inf at the decision boundary.
+
+    A non-finite mark or rate compares False against every threshold, so it would
+    poison qty/notional and slip through the gates as a falsely-valid trade. Marks
+    must additionally be strictly positive (Order requires price > 0).
+    """
+    if not math.isfinite(value):
+        raise ValueError(f"{name} is non-finite ({value}) — malformed market data")
+    if positive and value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+
+
 def build_proposal(
     inputs: PerpMarketInputs, cfg: PerpStrategyConfig | None = None
 ) -> PerpTradeProposal | None:
@@ -64,10 +78,12 @@ def build_proposal(
     """
     cfg = cfg or PerpStrategyConfig()
 
-    if inputs.long_mark_usd <= 0 or inputs.short_mark_usd <= 0:
-        raise ValueError(
-            f"non-positive mark(s): long={inputs.long_mark_usd}, short={inputs.short_mark_usd}"
-        )
+    _require_finite("long_mark_usd", inputs.long_mark_usd, positive=True)
+    _require_finite("short_mark_usd", inputs.short_mark_usd, positive=True)
+    _require_finite("long_funding_annual", inputs.long_funding_annual)
+    _require_finite("short_funding_annual", inputs.short_funding_annual)
+    _require_finite("long_liq_buffer_pct", inputs.long_liq_buffer_pct)
+    _require_finite("short_liq_buffer_pct", inputs.short_liq_buffer_pct)
 
     edge = captured_carry_annual(inputs)
     if edge < cfg.min_funding_diff_annual:

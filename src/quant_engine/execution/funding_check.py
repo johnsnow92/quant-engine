@@ -40,31 +40,46 @@ def expected_funding_usd(obs: FundingObservation) -> float:
 
 
 def verify_funding(
-    obs: FundingObservation, tolerance_usd: float = 1.0, rel_tolerance: float = 0.10
+    obs: FundingObservation,
+    tolerance_usd: float = 1.0,
+    rel_tolerance: float = 0.10,
+    rate_floor_annual: float = 0.005,
 ) -> tuple[bool, str]:
-    """True iff realized funding matches the stated convention within tolerance.
+    """True iff realized funding matches the stated convention.
 
-    Catches direction (sign) errors and magnitude errors (which is how an interval or
-    denomination mistake shows up). Passes within an absolute floor OR a relative band
-    so tiny micro-size amounts (dominated by noise) don't false-positive.
+    Catches direction (sign) errors and magnitude errors (how an interval or
+    denomination mistake shows up). The discriminator is the stated RATE, not the
+    dollar amount: when the rate is materially non-zero the check is RELATIVE, so
+    a 3x interval error is caught even at sub-dollar micro size where every amount
+    is below any absolute tolerance. The absolute tolerance applies only to the
+    near-zero-rate (dead-band) leg, where expected funding is ~0 by design and a
+    relative band is undefined — there a few cents of realized noise is fine.
     """
     expected = expected_funding_usd(obs)
     realized = obs.realized_funding_usd
 
-    if expected != 0.0 and realized * expected < 0.0:
+    # Near-zero-rate leg (Kalshi dead band): expected ≈ 0; tolerate small noise.
+    if abs(obs.stated_rate_annual) <= rate_floor_annual or expected == 0.0:
+        if abs(realized) <= tolerance_usd:
+            return True, ""
+        return False, (
+            f"{obs.venue} funding MAGNITUDE mismatch: near-zero rate so expected ≈0 "
+            f"({expected:+.4f}), realized {realized:+.4f} — unexpected funding on a ~0-rate leg"
+        )
+
+    # Material rate: sign, then a size-independent relative band.
+    if realized * expected < 0.0:
         return False, (
             f"{obs.venue} funding SIGN mismatch: expected {expected:+.4f}, "
             f"realized {realized:+.4f} — modelled the wrong direction"
         )
 
     diff = realized - expected
-    if abs(diff) <= tolerance_usd:
-        return True, ""
-    if expected != 0.0 and abs(diff) <= abs(expected) * rel_tolerance:
+    if abs(diff) <= abs(expected) * rel_tolerance:
         return True, ""
 
     return False, (
         f"{obs.venue} funding MAGNITUDE mismatch: expected {expected:+.4f}, "
-        f"realized {realized:+.4f} (diff {diff:+.4f}) — check interval "
-        f"(8h vs hourly) / rate vs price-denominated"
+        f"realized {realized:+.4f} (diff {diff:+.4f}, {abs(diff) / abs(expected):.0%} off) "
+        f"— check interval (8h vs hourly) / rate vs price-denominated"
     )

@@ -57,8 +57,22 @@ def test_kalshi_out_of_dead_band_kills_edge():
 
 
 def test_non_positive_mark_raises():
-    with pytest.raises(ValueError, match="non-positive mark"):
+    with pytest.raises(ValueError, match="must be positive"):
         build_proposal(_inputs(short_mark_usd=0.0))
+
+
+def test_non_finite_mark_raises():
+    # NaN/inf slip past a `<= 0` check and poison qty/edge — must be rejected.
+    with pytest.raises(ValueError, match="non-finite"):
+        build_proposal(_inputs(long_mark_usd=float("nan")))
+    with pytest.raises(ValueError, match="non-finite"):
+        build_proposal(_inputs(short_mark_usd=float("inf")))
+
+
+def test_non_finite_funding_raises():
+    # A NaN funding rate would make `edge < threshold` False and build a bad trade.
+    with pytest.raises(ValueError, match="non-finite"):
+        build_proposal(_inputs(short_funding_annual=float("nan")))
 
 
 # ---------------------------------------------------------------------------

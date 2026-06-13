@@ -57,3 +57,17 @@ def test_multiple_breaches_listed():
 def test_heartbeat_dead_mans_switch():
     assert heartbeat_stale(last_recon_epoch=0.0, now_epoch=200.0, cfg=CFG) is True   # 200s > 120s
     assert heartbeat_stale(last_recon_epoch=100.0, now_epoch=150.0, cfg=CFG) is False  # 50s < 120s
+
+
+def test_non_finite_margin_buffer_flattens():
+    # A NaN buffer (malformed venue payload) compares False against the floor — it
+    # must FLATTEN, not read as healthy.
+    res = reconcile(_snap(short_buf=float("nan")), CFG)
+    assert res.should_flatten is True
+    assert any("non-finite margin buffer" in b for b in res.breaches)
+
+
+def test_non_finite_position_flattens():
+    res = reconcile(_snap(short_btc=float("nan")), CFG)
+    assert res.should_flatten is True
+    assert any("non-finite net delta" in b for b in res.breaches)

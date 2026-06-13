@@ -131,3 +131,68 @@ def test_run_loop_breaks_on_flatten():
     assert len(ticks) == 1          # broke after the first flatten
     assert ticks[0].flattened
     assert len(flats) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fail-safety (Codex review): venue read failure + flatten failure
+# ---------------------------------------------------------------------------
+
+def test_snapshot_read_failure_flattens_defensively():
+    class _BoomReader:
+        def leg_snapshot(self, instrument):
+            raise ConnectionError("venue API timeout")
+
+    clock = _Clock()
+    flats: list[str] = []
+    daemon = ReconDaemon(
+        long_reader=_BoomReader(),
+        short_reader=_FakeReader("coinbase-futures", -0.04, 30.0),
+        flatten_fn=flats.append,
+        now_fn=clock.now,
+    )
+    tick = daemon.tick(last_recon_epoch=clock.now())
+    assert tick.flattened is True
+    assert "snapshot read failed" in tick.reason
+    assert len(flats) == 1
+
+
+def test_failed_flatten_does_not_crash_and_reports_unflattened():
+    clock = _Clock()
+    alerts: list[str] = []
+
+    def boom(reason: str):
+        raise RuntimeError("flatten venue down")
+
+    daemon = ReconDaemon(
+        long_reader=_FakeReader("kalshi-perp", 0.04, 30.0),
+        short_reader=_FakeReader("coinbase-futures", -0.06, 30.0),   # delta drift → breach
+        flatten_fn=boom,
+        now_fn=clock.now,
+        alert_fn=alerts.append,
+    )
+    tick = daemon.tick(last_recon_epoch=clock.now())
+    assert tick.ok is False
+    assert tick.flattened is False                       # flatten did not complete
+    assert any("FLATTEN FAILED" in a for a in alerts)
+
+
+def test_failed_flatten_keeps_retrying_until_flat():
+    clock = _Clock()
+    attempts = {"n": 0}
+
+    def flaky(reason: str):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise RuntimeError("flatten venue down")
+        # third attempt succeeds (no raise)
+
+    daemon = ReconDaemon(
+        long_reader=_FakeReader("kalshi-perp", 0.04, 30.0),
+        short_reader=_FakeReader("coinbase-futures", -0.06, 30.0),
+        flatten_fn=flaky,
+        now_fn=clock.now,
+    )
+    ticks = daemon.run(interval_s=30.0, sleep_fn=clock.sleep, should_stop=_stop_after(10))
+    assert attempts["n"] == 3            # retried through two failures
+    assert ticks[-1].flattened is True   # broke only once the flatten completed
+    assert len(ticks) == 3

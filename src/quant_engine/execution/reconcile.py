@@ -12,6 +12,7 @@ shows up as a margin-buffer drop the reconciler catches.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -53,12 +54,22 @@ def reconcile(snap: PositionSnapshot, cfg: ReconConfig | None = None) -> ReconRe
     cfg = cfg or ReconConfig()
     breaches: list[str] = []
 
+    # Non-finite data must FLATTEN, never pass: a NaN/inf compares False against
+    # every threshold, so an unvalidated malformed payload would read as healthy —
+    # the exact false-positive the reconciler exists to catch.
     nd = net_delta(snap)
-    if abs(nd) > cfg.net_delta_eps_btc:
+    if not math.isfinite(nd):
+        breaches.append(f"non-finite net delta ({nd}) — malformed position data, flattening")
+    elif abs(nd) > cfg.net_delta_eps_btc:
         breaches.append(f"delta drift {nd:+.6f} BTC exceeds eps {cfg.net_delta_eps_btc}")
 
     for leg in (snap.long, snap.short):
-        if leg.margin_buffer_pct < cfg.min_margin_buffer_pct:
+        if not math.isfinite(leg.margin_buffer_pct):
+            breaches.append(
+                f"{leg.venue} non-finite margin buffer ({leg.margin_buffer_pct}) "
+                f"— malformed data, flattening"
+            )
+        elif leg.margin_buffer_pct < cfg.min_margin_buffer_pct:
             breaches.append(
                 f"{leg.venue} margin buffer {leg.margin_buffer_pct}% "
                 f"below floor {cfg.min_margin_buffer_pct}%"

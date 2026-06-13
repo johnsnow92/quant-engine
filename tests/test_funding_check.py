@@ -57,10 +57,23 @@ def test_interval_magnitude_mismatch_fails():
     assert "MAGNITUDE mismatch" in reason
 
 
-def test_small_diff_within_absolute_tolerance_passes():
-    exp = expected_funding_usd(_short(realized=0.0))      # ~ +$2.90
-    ok, _ = verify_funding(_short(realized=exp + 0.5))    # $0.50 < $1 abs tolerance
+def test_zero_rate_leg_tolerates_small_noise():
+    # The 0%-funding (dead-band) leg: expected ≈0, a few cents of realized is fine.
+    obs = FundingObservation("kalshi-perp", 0.04, 63_000.0, 0.0, 168.0, 0.20)
+    ok, _ = verify_funding(obs)
     assert ok
+
+
+def test_micro_size_interval_error_still_caught():
+    # Sub-dollar expected funding: a 3x interval error is below any $1 abs tolerance,
+    # but the relative band (material rate) still catches it — the whole point.
+    base = FundingObservation("coinbase-futures", -0.001, 63_000.0, 0.06, 1.0, 0.0)
+    exp = expected_funding_usd(base)                      # ~ $0.0004, far below $1
+    ok, reason = verify_funding(
+        FundingObservation("coinbase-futures", -0.001, 63_000.0, 0.06, 1.0, exp * 3.0)
+    )
+    assert ok is False
+    assert "MAGNITUDE mismatch" in reason
 
 
 def test_relative_tolerance_passes_at_scale():

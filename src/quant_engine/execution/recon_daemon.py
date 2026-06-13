@@ -67,18 +67,26 @@ class ReconDaemon:
         # Dead-man's-switch first: a stale gap means flatten regardless of reads.
         if heartbeat_stale(last_recon_epoch, now, self.cfg):
             reason = f"heartbeat stale: {now - last_recon_epoch:.0f}s since last recon"
-            self._flatten(reason)
-            return ReconTick(ok=False, flattened=True, reason=reason, recon_result=None, epoch=now)
+            flattened = self._flatten(reason)
+            return ReconTick(ok=False, flattened=flattened, reason=reason, recon_result=None, epoch=now)
 
-        snap = PositionSnapshot(
-            long=self.long_reader.leg_snapshot(self.instrument),
-            short=self.short_reader.leg_snapshot(self.instrument),
-        )
+        # A venue read that raises mid-position must not crash the monitor and leave
+        # the position unwatched — treat it as unverifiable and flatten defensively.
+        try:
+            snap = PositionSnapshot(
+                long=self.long_reader.leg_snapshot(self.instrument),
+                short=self.short_reader.leg_snapshot(self.instrument),
+            )
+        except Exception as exc:
+            reason = f"snapshot read failed ({exc}) — position unverifiable, flattening defensively"
+            flattened = self._flatten(reason)
+            return ReconTick(ok=False, flattened=flattened, reason=reason, recon_result=None, epoch=now)
+
         result = reconcile(snap, self.cfg)
         if result.should_flatten:
             reason = "; ".join(result.breaches)
-            self._flatten(reason)
-            return ReconTick(ok=False, flattened=True, reason=reason, recon_result=result, epoch=now)
+            flattened = self._flatten(reason)
+            return ReconTick(ok=False, flattened=flattened, reason=reason, recon_result=result, epoch=now)
 
         return ReconTick(ok=True, flattened=False, reason="", recon_result=result, epoch=now)
 
@@ -90,10 +98,12 @@ class ReconDaemon:
         should_stop: Callable[[], bool],
         last_recon_epoch: float | None = None,
     ) -> list[ReconTick]:
-        """Drive ticks until ``should_stop()`` or a flatten. Returns every tick.
+        """Drive ticks until ``should_stop()`` or a successful flatten.
 
-        Breaks immediately after a flatten — the position is flat, so there is
-        nothing to monitor until a re-entry restarts the daemon.
+        Breaks once a flatten actually completes — the position is flat, so there
+        is nothing to monitor until a re-entry restarts the daemon. A flatten that
+        FAILED (``flattened=False`` on a breach tick) does not break: the loop
+        keeps ticking and retries, since the position may still be live.
         """
         epoch = last_recon_epoch if last_recon_epoch is not None else self.now_fn()
         ticks: list[ReconTick] = []
@@ -108,8 +118,23 @@ class ReconDaemon:
 
     # ------------------------------------------------------------------
 
-    def _flatten(self, reason: str) -> None:
+    def _flatten(self, reason: str) -> bool:
+        """Attempt the flatten; return True only if it actually completed.
+
+        A flatten that itself raises must not propagate and kill the loop — the
+        position may still be live, so we alert CRITICAL and report failure so the
+        run loop keeps monitoring and retrying rather than breaking on a position
+        it never actually closed.
+        """
         log.critical("[recon] FLATTEN — %s", reason)
         if self.alert_fn is not None:
             self.alert_fn(f"[recon] auto-flatten: {reason}")
-        self.flatten_fn(reason)
+        try:
+            self.flatten_fn(reason)
+            return True
+        except Exception as exc:
+            log.critical("[recon] FLATTEN FAILED (%s) — position may be live, will retry: %s",
+                         exc, reason)
+            if self.alert_fn is not None:
+                self.alert_fn(f"[recon] FLATTEN FAILED: {exc} — position may be live, retrying")
+            return False
