@@ -1,0 +1,77 @@
+name: Funding Regime Watcher
+
+on:
+  schedule:
+    # Every 6 hours: 00:00, 06:00, 12:00, 18:00 UTC
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      always_alert:
+        description: 'Send Telegram regardless of regime state'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  check-regime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Persist regime state between runs so we only alert on transitions.
+      - name: Restore regime state cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/regime_state.json
+          key: regime-state-${{ github.run_id }}
+          restore-keys: |
+            regime-state-
+
+      - name: Run regime watcher
+        id: regime
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINDESK_API_KEY: ${{ secrets.COINDESK_API_KEY }}
+        run: |
+          EXTRA_FLAGS="--alert-on-change-only"
+          if [[ "${{ github.event.inputs.always_alert }}" == "true" ]]; then
+            EXTRA_FLAGS="--always-alert"
+          fi
+          set +e
+          uv run python scripts/watch_funding_regime.py \
+            --state-file /tmp/regime_state.json \
+            $EXTRA_FLAGS
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "regime_on=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EXIT_CODE" -eq 1 ]; then
+            echo "regime_on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: watcher exited with code $EXIT_CODE" && exit "$EXIT_CODE"
+          fi
+
+      - name: Log regime status
+        run: |
+          echo "Regime ON: ${{ steps.regime.outputs.regime_on }}"
+
+  # Gate: downstream jobs (e.g. execute carry) only run when regime is ON.
+  # Uncomment and fill in when the live execution adapter is ready.
+  # run-carry:
+  #   needs: check-regime
+  #   if: needs.check-regime.outputs.regime_on == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - run: echo "TODO: trigger live carry execution"
