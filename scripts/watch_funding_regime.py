@@ -100,6 +100,18 @@ def main() -> None:
         help="Min annualized cross-venue spread to trigger (default 5%%)",
     )
     parser.add_argument(
+        "--carry-threshold",
+        type=float,
+        default=0.05,
+        help="Min trailing-7d BTC perp funding, annualized, for the carry regime (default 5%%)",
+    )
+    parser.add_argument(
+        "--carry-lookback",
+        type=int,
+        default=168,
+        help="Bars (1h) for the carry-regime window (default 168 = 7 days)",
+    )
+    parser.add_argument(
         "--state-file",
         type=Path,
         default=None,
@@ -125,6 +137,8 @@ def main() -> None:
         state = check_regime(
             single_venue_threshold=args.single_venue_threshold,
             spread_threshold=args.spread_threshold,
+            carry_threshold=args.carry_threshold,
+            carry_lookback=args.carry_lookback,
         )
     except Exception as exc:
         log.error("Failed to fetch regime state: %s", exc)
