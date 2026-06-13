@@ -2,7 +2,8 @@
 
 Every order must pass the guard layer before any broker (paper or live) acts on
 it. Guards are the kill-switch boundary: position limits, notional caps, an
-instrument allowlist, and a global halt. A rejected order raises and never fills.
+instrument allowlist, an optional venue-legality allowlist, and a global halt.
+A rejected order raises and never fills.
 """
 from __future__ import annotations
 
@@ -43,11 +44,20 @@ class PreTradeGuard:
     max_notional_usd: float
     max_position_qty: float
     kill_switch: bool = False
+    venue: str | None = None
 
     def check(self, order: Order, current_position: float = 0.0) -> Order:
         """Return the order if it passes every limit, else raise GuardRejection."""
         if self.kill_switch:
             raise GuardRejection("kill switch engaged: all trading halted")
+        # Venue-legality is the outermost compliance gate (after the kill switch):
+        # an order to an off-allowlist venue is rejected before any other check.
+        # Imported lazily to avoid a circular import (venue_legality imports
+        # GuardRejection from this module).
+        if self.venue is not None:
+            from .venue_legality import assert_venue_allowed
+
+            assert_venue_allowed(self.venue)
         if order.instrument not in self.allowed_instruments:
             raise GuardRejection(f"instrument {order.instrument} not in allowlist")
         if order.notional > self.max_notional_usd:
