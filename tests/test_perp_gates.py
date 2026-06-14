@@ -31,6 +31,8 @@ def _valid() -> PerpTradeProposal:
         short_notional_usd=2_500.0,
         short_leverage=2.5,
         short_liq_buffer_pct=30.0,
+        long_funding_annual=0.0,
+        short_funding_annual=0.06,
         funding_diff_annual=0.06,
         hold_hours=2_190.0,
         round_trip_fees_usd=20.0,
@@ -69,6 +71,21 @@ def test_edge_clears_fees_gate():
 
 def test_edge_gate_passes_with_long_enough_hold():
     assert gate_edge_clears_fees(_valid(), CFG)[0] is True
+
+
+def test_edge_gate_uses_per_leg_notionals_not_long_proxy():
+    # SHORT $2.5K collecting +6%, LONG only $1K paying 0%. The funding we actually
+    # collect is on the SHORT notional. The old long-notional proxy
+    # (1000 * 0.06 * 0.25 = $15) would wrongly REJECT; per-leg
+    # (2500 * 0.06 * 0.25 = $37.5) correctly ACCEPTS.
+    p = dataclasses.replace(
+        _valid(),
+        long_notional_usd=1_000.0,
+        short_notional_usd=2_500.0,
+        long_funding_annual=0.0,
+        short_funding_annual=0.06,
+    )
+    assert gate_edge_clears_fees(p, CFG)[0] is True
 
 
 def test_liquidation_buffer_gate():

@@ -38,7 +38,9 @@ class PerpTradeProposal:
     short_liq_buffer_pct: float
 
     # Economics
-    funding_diff_annual: float          # net annualized carry edge (>0 = profitable)
+    long_funding_annual: float          # signed annualized funding on the long leg (we PAY it)
+    short_funding_annual: float         # signed annualized funding on the short leg (we RECEIVE it)
+    funding_diff_annual: float          # net annualized carry edge (short - long); informational
     hold_hours: float                   # expected hold, for the edge projection
     round_trip_fees_usd: float          # entry + exit fees, both legs
 
@@ -87,7 +89,14 @@ def gate_leverage(p: PerpTradeProposal, cfg: PerpGateConfig) -> tuple[bool, str]
 
 
 def gate_edge_clears_fees(p: PerpTradeProposal, cfg: PerpGateConfig) -> tuple[bool, str]:
-    projected = p.long_notional_usd * p.funding_diff_annual * (p.hold_hours / _HOURS_PER_YEAR)
+    # Per-leg funding (Codex live-path req #4): we RECEIVE on the short leg and PAY
+    # on the long leg, each on its OWN notional. The old long-notional proxy
+    # (long_notional * funding_diff) is exact only when the leg notionals match;
+    # once live marks diverge they don't, so compute the two legs separately.
+    projected = (
+        p.short_notional_usd * p.short_funding_annual
+        - p.long_notional_usd * p.long_funding_annual
+    ) * (p.hold_hours / _HOURS_PER_YEAR)
     required = p.round_trip_fees_usd + cfg.min_edge_buffer_usd
     if projected < required:
         return False, (

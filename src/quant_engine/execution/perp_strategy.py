@@ -105,6 +105,8 @@ def build_proposal(
         short_notional_usd=qty_btc * inputs.short_mark_usd,
         short_leverage=cfg.short_leverage,
         short_liq_buffer_pct=inputs.short_liq_buffer_pct,
+        long_funding_annual=inputs.long_funding_annual,
+        short_funding_annual=inputs.short_funding_annual,
         funding_diff_annual=edge,
         hold_hours=cfg.hold_hours,
         round_trip_fees_usd=cfg.round_trip_fees_usd,
