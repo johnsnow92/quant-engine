@@ -20,6 +20,8 @@ class Order:
     side: str  # 'buy' or 'sell'
     qty: float
     price: float
+    reduce_only: bool = False   # live: only reduce an existing position, never flip it
+    order_type: str = "limit"   # "limit" (default) | "market" — live unwind uses "market"
 
     def __post_init__(self) -> None:
         if self.side not in ("buy", "sell"):
@@ -28,6 +30,8 @@ class Order:
             raise ValueError("qty must be positive")
         if self.price <= 0:
             raise ValueError("price must be positive")
+        if self.order_type not in ("limit", "market"):
+            raise ValueError(f"order_type must be 'limit' or 'market', got {self.order_type!r}")
 
     @property
     def notional(self) -> float:

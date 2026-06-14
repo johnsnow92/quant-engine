@@ -20,12 +20,14 @@ def _paper(instrument: str, **guard_kw) -> PaperBroker:
     return PaperBroker(guard=PreTradeGuard(**base))
 
 
-def test_reverse_flips_side_only():
+def test_reverse_is_reduce_only_market():
     o = Order("BTC-PERP", "buy", 0.01, 63_000.0)
     r = _reverse(o)
     assert r.side == "sell"
     assert r.qty == 0.01
-    assert r.price == 63_000.0
+    assert r.price == 63_000.0          # kept only as the Fill reference
+    assert r.reduce_only is True        # never flips the position
+    assert r.order_type == "market"     # not a stale-price limit
     assert _reverse(r).side == "buy"
 
 
@@ -102,3 +104,28 @@ def test_naked_leg_when_short_and_unwind_both_fail():
     assert res.is_safe is False
     assert longb.calls == 2     # tried to unwind
     assert "unwind_failed" in res.error
+
+
+def test_naked_leg_when_unwind_submit_succeeds_but_leg_not_flat():
+    """Verify-flat: the unwind order 'fills' but the broker still reports the long
+    open (a partial/no-op reduce). That is a naked leg, not a clean UNWOUND."""
+
+    class _UnwindReportsNotFlat:
+        def submit_order(self, order: Order) -> Fill:
+            return Fill(order.instrument, order.side, order.qty, order.price, 0.0)
+
+        def position(self, instrument: str) -> float:
+            return 0.01     # long never actually flattens
+
+    longb = _UnwindReportsNotFlat()
+    shortb = _paper("OTHER")    # short rejects → triggers the unwind
+    ex = TwoLegExecutor(longb, shortb)
+
+    res = ex.execute(
+        Order("BTC-K", "buy", 0.01, 63_000.0),
+        Order("BTC-CB", "sell", 0.01, 63_010.0),
+    )
+    assert res.outcome is TwoLegOutcome.NAKED_LEG
+    assert res.is_safe is False
+    assert res.unwind_fill is not None       # the submit succeeded...
+    assert "did not flatten" in res.error    # ...but verify-flat caught the residual

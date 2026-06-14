@@ -44,14 +44,40 @@ class TwoLegResult:
         return self.outcome is not TwoLegOutcome.NAKED_LEG
 
 
+_FLAT_EPS = 1e-9
+
+
 def _reverse(order: Order) -> Order:
-    """The order that flattens ``order`` (same instrument, qty, price; opposite side)."""
+    """The reduce-only MARKET order that flattens ``order`` — Codex live-path req #1.
+
+    A live unwind must be reduce-only at market (slippage-capped by the venue), NOT a
+    limit at the original entry price that a moving market can leave unfilled, which
+    would strand the leg naked. ``price`` is kept only as the entry reference for the
+    Fill; the live broker ignores it for a market order.
+    """
     return Order(
         instrument=order.instrument,
         side="sell" if order.side == "buy" else "buy",
         qty=order.qty,
         price=order.price,
+        reduce_only=True,
+        order_type="market",
     )
+
+
+def _leg_position(broker: object, instrument: str) -> float | None:
+    """The broker's signed position in ``instrument``, or None if it can't report.
+
+    None = 'cannot verify' (broker exposes no ``position()``); the caller treats that
+    as assume-flat rather than raising a false naked-leg alarm.
+    """
+    pos_fn = getattr(broker, "position", None)
+    if pos_fn is None:
+        return None
+    try:
+        return pos_fn(instrument)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -104,16 +130,9 @@ class TwoLegExecutor:
     ) -> TwoLegResult:
         try:
             unwind = self.long_broker.submit_order(_reverse(long_order))
-            log.info("[%s] long leg unwound cleanly — flat", self.mode)
-            return TwoLegResult(
-                TwoLegOutcome.UNWOUND,
-                long_fill=long_fill,
-                unwind_fill=unwind,
-                error=short_error,
-            )
         except Exception as exc:
             log.critical(
-                "[%s] NAKED LEG — short failed AND unwind failed (short=%s, unwind=%s)",
+                "[%s] NAKED LEG — short failed AND unwind submit failed (short=%s, unwind=%s)",
                 self.mode,
                 short_error,
                 exc,
@@ -123,3 +142,28 @@ class TwoLegExecutor:
                 long_fill=long_fill,
                 error=f"short_failed={short_error}; unwind_failed={exc}",
             )
+
+        # Verify-flat: a 'successful' unwind submit is not proof the leg closed. A
+        # partial or no-op reduce that leaves exposure is still a naked leg — confirm
+        # the broker reports the long flat before calling it UNWOUND.
+        residual = _leg_position(self.long_broker, long_order.instrument)
+        if residual is not None and abs(residual) > _FLAT_EPS:
+            log.critical(
+                "[%s] NAKED LEG — unwind did not flatten long leg: residual=%.8f",
+                self.mode,
+                residual,
+            )
+            return TwoLegResult(
+                TwoLegOutcome.NAKED_LEG,
+                long_fill=long_fill,
+                unwind_fill=unwind,
+                error=f"unwind did not flatten long leg: residual={residual} (short_failed={short_error})",
+            )
+
+        log.info("[%s] long leg unwound — verified flat", self.mode)
+        return TwoLegResult(
+            TwoLegOutcome.UNWOUND,
+            long_fill=long_fill,
+            unwind_fill=unwind,
+            error=short_error,
+        )
