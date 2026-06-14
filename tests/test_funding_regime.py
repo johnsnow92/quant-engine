@@ -67,6 +67,14 @@ def test_carry_regime_off_below_five_percent():
     assert state.triggered_by == []
 
 
+def test_carry_regime_on_at_exact_five_percent_boundary():
+    # The threshold is inclusive (>=); 5%/8760*8760 round-trips to exactly 0.05.
+    state = _check(_const_funding(0.05))
+    assert state.is_on
+    assert state.btc_carry_ann == pytest.approx(0.05, abs=1e-6)
+    assert any("carry" in t for t in state.triggered_by)
+
+
 def test_carry_uses_7d_window_not_24h():
     # Last 24h spike to 20%, but the 7d mean stays ~2.9% → directional ON, carry OFF.
     state = _check(_split_funding(recent_annual=0.20, older_annual=0.0))
@@ -85,12 +93,12 @@ def test_negative_funding_does_not_trigger_carry():
     state = _check(_const_funding(-0.06))
     assert state.btc_carry_ann == pytest.approx(-0.06, abs=1e-6)
     assert not any("carry" in t for t in state.triggered_by)
-    assert state.is_on is False   # |−6%| < 15% directional too
+    assert state.is_on is False   # |-6%| < 15% directional too
 
 
 def test_large_negative_triggers_directional_but_not_carry():
     state = _check(_const_funding(-0.20))
-    assert state.is_on                                      # |−20%| ≥ 15% directional
+    assert state.is_on                                      # |-20%| >= 15% directional
     assert any("Crypto.com" in t for t in state.triggered_by)
     assert not any("carry" in t for t in state.triggered_by)
 
@@ -108,3 +116,11 @@ def test_summary_reports_carry_line():
     summary = _check(_const_funding(0.06)).summary()
     assert "BTC carry" in summary
     assert "(7d)" in summary
+
+
+def test_non_positive_lookback_raises():
+    # A negative lookback would flip pandas tail(-n) semantics ("all but last n").
+    with pytest.raises(ValueError, match="positive"):
+        _check(_const_funding(0.06), lookback=0)
+    with pytest.raises(ValueError, match="positive"):
+        _check(_const_funding(0.06), carry_lookback=-1)

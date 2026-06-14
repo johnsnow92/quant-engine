@@ -53,9 +53,9 @@ class RegimeState:
             f"Funding regime: {state}  ({self.checked_at.strftime('%Y-%m-%d %H:%M UTC')})",
             f"  BTC Crypto.com {self.btc_cc_ann:+.1%} ann (24h)",
             f"  BTC carry      {self.btc_carry_ann:+.1%} ann (7d)",
-            f"  BTC Binance    {self.btc_bn_ann:+.1%} ann",
-            f"  BTC spread     {self.btc_spread_ann:+.1%} ann",
-            f"  ETH Crypto.com {self.eth_cc_ann:+.1%} ann",
+            f"  BTC Binance    {self.btc_bn_ann:+.1%} ann (24h)",
+            f"  BTC spread     {self.btc_spread_ann:+.1%} ann (24h)",
+            f"  ETH Crypto.com {self.eth_cc_ann:+.1%} ann (24h)",
         ]
         if self.triggered_by:
             lines.append(f"  Triggered by: {', '.join(self.triggered_by)}")
@@ -87,6 +87,14 @@ def check_regime(
     CoinDesk requires COINDESK_API_KEY for funding data. If unavailable, the
     cross-venue spread check is skipped and single-venue Crypto.com data is used.
     """
+    if lookback <= 0 or carry_lookback <= 0:
+        raise ValueError("lookback and carry_lookback must be positive integers")
+    if single_venue_threshold < 0 or spread_threshold < 0 or carry_threshold < 0:
+        raise ValueError("thresholds must be non-negative")
+    # Fetch at least enough bars to cover the longest window requested, so a large
+    # carry_lookback isn't silently truncated to `count`.
+    count = max(count, lookback, carry_lookback)
+
     cc = CryptoComClient()
 
     log.debug("Fetching Crypto.com BTC funding...")
@@ -119,18 +127,18 @@ def check_regime(
 
     triggered: list[str] = []
     if abs(btc_cc_ann) >= single_venue_threshold:
-        triggered.append(f"BTC Crypto.com {btc_cc_ann:+.1%}")
+        triggered.append(f"BTC Crypto.com {btc_cc_ann:+.1%} (24h)")
     if btc_bn_ann and abs(btc_bn_ann) >= single_venue_threshold:
-        triggered.append(f"BTC Binance {btc_bn_ann:+.1%}")
+        triggered.append(f"BTC Binance {btc_bn_ann:+.1%} (24h)")
     if abs(eth_cc_ann) >= single_venue_threshold:
-        triggered.append(f"ETH Crypto.com {eth_cc_ann:+.1%}")
+        triggered.append(f"ETH Crypto.com {eth_cc_ann:+.1%} (24h)")
     # Carry trigger: SIGNED (positive only) BTC perp funding over the 7d window.
     # Shorting the +funding leg collects positive funding; negative funding is not
     # a short-carry opportunity, so this is deliberately not abs().
     if btc_carry_ann >= carry_threshold:
         triggered.append(f"BTC carry {btc_carry_ann:+.1%} (7d)")
     if btc_spread_ann and abs(btc_spread_ann) >= spread_threshold:
-        triggered.append(f"BTC spread {btc_spread_ann:+.1%}")
+        triggered.append(f"BTC spread {btc_spread_ann:+.1%} (24h)")
 
     return RegimeState(
         is_on=bool(triggered),
