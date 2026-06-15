@@ -1,11 +1,15 @@
 """Funding-regime detector for the quant-engine wake trigger.
 
-A 'regime ON' means the rolling 24h annualized funding rate on at least one
-venue clears the hurdle rate, or the cross-venue spread clears a separate
-threshold — making the carry strategy worth running.
+A 'regime ON' means at least one trigger fires:
+  * the rolling 24h annualized funding on a venue clears the directional hurdle
+    (~15%, above the VOO benchmark — wakes the dormant directional engine), OR
+  * the trailing-7d BTC perp funding clears the lower CARRY floor (~5%), the
+    regime the perp dead-band carry harvests by shorting the +funding leg, OR
+  * the cross-venue spread clears its own threshold.
 
-Regime thresholds are intentionally conservative relative to the 4.70% LOC
-floor: both the VOO hurdle (~14%) and a smaller carry-spread floor.
+The carry trigger is intentionally lower and longer-windowed than the directional
+one: the carry edge sits ~6%/yr (far below the 15% directional hurdle) and a 7-day
+window smooths the flicker a 24h window shows near the threshold.
 """
 from __future__ import annotations
 
@@ -25,13 +29,18 @@ log = logging.getLogger(__name__)
 DEFAULT_SINGLE_VENUE_THRESHOLD = 0.15
 # Cross-venue spread only needs to clear transaction costs by a margin.
 DEFAULT_SPREAD_THRESHOLD = 0.05
-LOOKBACK_BARS = 24  # 24-hour rolling window (1h bars)
+# Carry floor: +5% APR BTC perp funding is enough for the delta-neutral carry
+# (it does not compete with the VOO hurdle because it is hedged, not directional).
+DEFAULT_CARRY_THRESHOLD = 0.05
+LOOKBACK_BARS = 24       # 24-hour rolling window (1h bars) — directional triggers
+CARRY_LOOKBACK_BARS = 168  # 7-day rolling window (1h bars) — carry trigger
 
 
 @dataclass
 class RegimeState:
     is_on: bool
     btc_cc_ann: float       # Crypto.com BTC annualized (last 24h mean)
+    btc_carry_ann: float    # Crypto.com BTC annualized (trailing 7d mean) — carry gauge
     btc_bn_ann: float       # Binance BTC annualized (last 24h mean)
     btc_spread_ann: float   # Cross-venue spread annualized
     eth_cc_ann: float
@@ -42,10 +51,11 @@ class RegimeState:
         state = "ON" if self.is_on else "OFF"
         lines = [
             f"Funding regime: {state}  ({self.checked_at.strftime('%Y-%m-%d %H:%M UTC')})",
-            f"  BTC Crypto.com {self.btc_cc_ann:+.1%} ann",
-            f"  BTC Binance    {self.btc_bn_ann:+.1%} ann",
-            f"  BTC spread     {self.btc_spread_ann:+.1%} ann",
-            f"  ETH Crypto.com {self.eth_cc_ann:+.1%} ann",
+            f"  BTC Crypto.com {self.btc_cc_ann:+.1%} ann (24h)",
+            f"  BTC carry      {self.btc_carry_ann:+.1%} ann (7d)",
+            f"  BTC Binance    {self.btc_bn_ann:+.1%} ann (24h)",
+            f"  BTC spread     {self.btc_spread_ann:+.1%} ann (24h)",
+            f"  ETH Crypto.com {self.eth_cc_ann:+.1%} ann (24h)",
         ]
         if self.triggered_by:
             lines.append(f"  Triggered by: {', '.join(self.triggered_by)}")
@@ -62,7 +72,9 @@ def _rolling_mean_ann(df: pd.DataFrame, col: str = "funding_per_hour", n: int = 
 def check_regime(
     single_venue_threshold: float = DEFAULT_SINGLE_VENUE_THRESHOLD,
     spread_threshold: float = DEFAULT_SPREAD_THRESHOLD,
+    carry_threshold: float = DEFAULT_CARRY_THRESHOLD,
     lookback: int = LOOKBACK_BARS,
+    carry_lookback: int = CARRY_LOOKBACK_BARS,
     cc_interval_hours: float = 1.0,
     cc_btc_perp: str = "BTCUSD-PERP",
     cc_eth_perp: str = "ETHUSD-PERP",
@@ -75,6 +87,14 @@ def check_regime(
     CoinDesk requires COINDESK_API_KEY for funding data. If unavailable, the
     cross-venue spread check is skipped and single-venue Crypto.com data is used.
     """
+    if lookback <= 0 or carry_lookback <= 0:
+        raise ValueError("lookback and carry_lookback must be positive integers")
+    if single_venue_threshold < 0 or spread_threshold < 0 or carry_threshold < 0:
+        raise ValueError("thresholds must be non-negative")
+    # Fetch at least enough bars to cover the longest window requested, so a large
+    # carry_lookback isn't silently truncated to `count`.
+    count = max(count, lookback, carry_lookback)
+
     cc = CryptoComClient()
 
     log.debug("Fetching Crypto.com BTC funding...")
@@ -88,6 +108,7 @@ def check_regime(
     cc_eth = normalize_per_hour(cc_eth)
 
     btc_cc_ann = _rolling_mean_ann(cc_btc, n=lookback)
+    btc_carry_ann = _rolling_mean_ann(cc_btc, n=carry_lookback)
     eth_cc_ann = _rolling_mean_ann(cc_eth, n=lookback)
 
     # Binance cross-venue spread — requires COINDESK_API_KEY.
@@ -106,17 +127,23 @@ def check_regime(
 
     triggered: list[str] = []
     if abs(btc_cc_ann) >= single_venue_threshold:
-        triggered.append(f"BTC Crypto.com {btc_cc_ann:+.1%}")
+        triggered.append(f"BTC Crypto.com {btc_cc_ann:+.1%} (24h)")
     if btc_bn_ann and abs(btc_bn_ann) >= single_venue_threshold:
-        triggered.append(f"BTC Binance {btc_bn_ann:+.1%}")
+        triggered.append(f"BTC Binance {btc_bn_ann:+.1%} (24h)")
     if abs(eth_cc_ann) >= single_venue_threshold:
-        triggered.append(f"ETH Crypto.com {eth_cc_ann:+.1%}")
+        triggered.append(f"ETH Crypto.com {eth_cc_ann:+.1%} (24h)")
+    # Carry trigger: SIGNED (positive only) BTC perp funding over the 7d window.
+    # Shorting the +funding leg collects positive funding; negative funding is not
+    # a short-carry opportunity, so this is deliberately not abs().
+    if btc_carry_ann >= carry_threshold:
+        triggered.append(f"BTC carry {btc_carry_ann:+.1%} (7d)")
     if btc_spread_ann and abs(btc_spread_ann) >= spread_threshold:
-        triggered.append(f"BTC spread {btc_spread_ann:+.1%}")
+        triggered.append(f"BTC spread {btc_spread_ann:+.1%} (24h)")
 
     return RegimeState(
         is_on=bool(triggered),
         btc_cc_ann=btc_cc_ann,
+        btc_carry_ann=btc_carry_ann,
         btc_bn_ann=btc_bn_ann,
         btc_spread_ann=btc_spread_ann,
         eth_cc_ann=eth_cc_ann,
