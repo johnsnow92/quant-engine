@@ -58,13 +58,23 @@ def verify_funding(
     expected = expected_funding_usd(obs)
     realized = obs.realized_funding_usd
 
-    # Near-zero-rate leg (Kalshi dead band): expected ≈ 0; tolerate small noise.
-    if abs(obs.stated_rate_annual) <= rate_floor_annual or expected == 0.0:
+    # Near-zero-rate leg (Kalshi dead band): expected ≈ 0 by design; tolerate
+    # small realized noise. Keyed on the RATE only — a material rate that happens
+    # to have zero expected (zero position/elapsed) must NOT take this path.
+    if abs(obs.stated_rate_annual) <= rate_floor_annual:
         if abs(realized) <= tolerance_usd:
             return True, ""
         return False, (
             f"{obs.venue} funding MAGNITUDE mismatch: near-zero rate so expected ≈0 "
             f"({expected:+.4f}), realized {realized:+.4f} — unexpected funding on a ~0-rate leg"
+        )
+
+    # Material rate but zero expected (zero position or elapsed) — nothing to
+    # reconcile, so the convention can't be verified from this sample.
+    if expected == 0.0:
+        return False, (
+            f"{obs.venue} material funding rate but expected funding is 0 "
+            f"(zero position or elapsed) — cannot verify convention from this sample"
         )
 
     # Material rate: sign, then a size-independent relative band.

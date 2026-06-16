@@ -85,3 +85,12 @@ def test_relative_tolerance_passes_at_scale():
     )
     assert ok
     assert exp == pytest.approx(290.0, abs=2.0)
+
+
+def test_material_rate_zero_expected_cannot_verify():
+    # Material rate but zero position => expected funding 0 => NOT the dead-band
+    # path; the convention can't be verified, so it must not silently pass.
+    obs = FundingObservation("coinbase-futures", 0.0, 63_000.0, 0.06, 168.0, 0.0)
+    ok, reason = verify_funding(obs)
+    assert ok is False
+    assert "expected funding is 0" in reason

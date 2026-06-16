@@ -196,3 +196,48 @@ def test_failed_flatten_keeps_retrying_until_flat():
     assert attempts["n"] == 3            # retried through two failures
     assert ticks[-1].flattened is True   # broke only once the flatten completed
     assert len(ticks) == 3
+
+
+def test_alert_failure_does_not_block_flatten():
+    # An alerting outage must NOT prevent the safety flatten or crash the monitor.
+    clock = _Clock()
+    flats: list[str] = []
+
+    def boom_alert(msg: str):
+        raise RuntimeError("alert channel down")
+
+    daemon = ReconDaemon(
+        long_reader=_FakeReader("kalshi-perp", 0.04, 30.0),
+        short_reader=_FakeReader("coinbase-futures", -0.06, 30.0),   # delta drift -> breach
+        flatten_fn=flats.append,
+        now_fn=clock.now,
+        alert_fn=boom_alert,
+    )
+    tick = daemon.tick(last_recon_epoch=clock.now())
+    assert tick.flattened is True        # flatten still ran despite the alert outage
+    assert len(flats) == 1
+
+
+def test_failed_heartbeat_flatten_keeps_refiring():
+    # A failed dead-man's-switch flatten must NOT reset the heartbeat baseline; it
+    # has to re-fire next cycle until the flatten actually completes.
+    clock = _Clock(start=1000.0)
+    attempts = {"n": 0}
+
+    def flaky(reason: str):
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise RuntimeError("flatten venue down")
+
+    daemon = ReconDaemon(
+        long_reader=_FakeReader("kalshi-perp", 0.04, 30.0),        # positions are healthy
+        short_reader=_FakeReader("coinbase-futures", -0.04, 30.0),
+        flatten_fn=flaky,
+        now_fn=clock.now,
+    )
+    # Stale baseline (epoch 0) trips the dead-man's-switch every tick until flat.
+    ticks = daemon.run(interval_s=30.0, sleep_fn=clock.sleep,
+                       should_stop=_stop_after(10), last_recon_epoch=0.0)
+    assert attempts["n"] == 2            # re-fired after the first failed heartbeat flatten
+    assert ticks[-1].flattened is True
+    assert all("heartbeat stale" in t.reason for t in ticks)

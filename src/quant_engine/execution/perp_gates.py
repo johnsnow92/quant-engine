@@ -11,6 +11,7 @@ rejected by default-deny.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 # The only two venues the perp executor may route to (spec §2). Default-deny.
@@ -130,6 +131,34 @@ def gate_max_position(p: PerpTradeProposal, cfg: PerpGateConfig) -> tuple[bool, 
     return True, ""
 
 
+def gate_finite(p: PerpTradeProposal, cfg: PerpGateConfig, day_pnl_usd: float) -> tuple[bool, str]:
+    """Fail-closed on any non-finite numeric input.
+
+    NaN/inf compare False against every ``<``/``>`` threshold, so without this a
+    hand-built (or adapter-poisoned) proposal would pass every other gate.
+    """
+    fields = {
+        "long_qty_btc": p.long_qty_btc,
+        "long_notional_usd": p.long_notional_usd,
+        "long_leverage": p.long_leverage,
+        "long_liq_buffer_pct": p.long_liq_buffer_pct,
+        "short_qty_btc": p.short_qty_btc,
+        "short_notional_usd": p.short_notional_usd,
+        "short_leverage": p.short_leverage,
+        "short_liq_buffer_pct": p.short_liq_buffer_pct,
+        "long_funding_annual": p.long_funding_annual,
+        "short_funding_annual": p.short_funding_annual,
+        "funding_diff_annual": p.funding_diff_annual,
+        "hold_hours": p.hold_hours,
+        "round_trip_fees_usd": p.round_trip_fees_usd,
+        "day_pnl_usd": day_pnl_usd,
+    }
+    bad = sorted(name for name, val in fields.items() if not math.isfinite(val))
+    if bad:
+        return False, f"non-finite proposal field(s): {', '.join(bad)} — rejecting (fail-closed)"
+    return True, ""
+
+
 def check_all(
     p: PerpTradeProposal,
     cfg: PerpGateConfig | None = None,
@@ -138,6 +167,7 @@ def check_all(
     """Run every gate. An entry is allowed only if all pass."""
     cfg = cfg or PerpGateConfig()
     checks = [
+        gate_finite(p, cfg, day_pnl_usd),
         gate_allowlist(p, cfg),
         gate_net_delta(p, cfg),
         gate_leverage(p, cfg),

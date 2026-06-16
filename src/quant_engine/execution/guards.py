@@ -7,6 +7,7 @@ A rejected order raises and never fills.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -26,8 +27,12 @@ class Order:
     def __post_init__(self) -> None:
         if self.side not in ("buy", "sell"):
             raise ValueError(f"side must be 'buy' or 'sell', got {self.side!r}")
+        if not math.isfinite(self.qty):
+            raise ValueError(f"qty must be finite, got {self.qty!r}")
         if self.qty <= 0:
             raise ValueError("qty must be positive")
+        if not math.isfinite(self.price):
+            raise ValueError(f"price must be finite, got {self.price!r}")
         if self.price <= 0:
             raise ValueError("price must be positive")
         if self.order_type not in ("limit", "market"):

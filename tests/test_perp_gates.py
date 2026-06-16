@@ -109,3 +109,17 @@ def test_check_all_aggregates_multiple_failures():
     res = check_all(p, CFG)
     assert res.passed is False
     assert len(res.failures) >= 2
+
+
+def test_non_finite_field_fails_closed():
+    # NaN compares False against every threshold; without the finite gate this passes.
+    p = dataclasses.replace(_valid(), long_qty_btc=float("nan"))
+    res = check_all(p, CFG)
+    assert res.passed is False
+    assert any("non-finite" in f for f in res.failures)
+
+
+def test_non_finite_day_pnl_fails_closed():
+    res = check_all(_valid(), CFG, day_pnl_usd=float("inf"))
+    assert res.passed is False
+    assert any("day_pnl_usd" in f for f in res.failures)

@@ -110,9 +110,14 @@ class ReconDaemon:
         while not should_stop():
             tick = self.tick(epoch)
             ticks.append(tick)
-            epoch = tick.epoch
             if tick.flattened:
                 break
+            # Advance the heartbeat baseline only on a clean reconciliation. A
+            # breach tick whose flatten FAILED keeps the prior epoch, so the
+            # dead-man's-switch re-fires next cycle instead of resetting its timer
+            # on a position that was never verified flat.
+            if tick.ok:
+                epoch = tick.epoch
             sleep_fn(interval_s)
         return ticks
 
@@ -127,14 +132,21 @@ class ReconDaemon:
         it never actually closed.
         """
         log.critical("[recon] FLATTEN — %s", reason)
-        if self.alert_fn is not None:
-            self.alert_fn(f"[recon] auto-flatten: {reason}")
+        self._alert(f"[recon] auto-flatten: {reason}")
         try:
             self.flatten_fn(reason)
             return True
         except Exception as exc:
             log.critical("[recon] FLATTEN FAILED (%s) — position may be live, will retry: %s",
                          exc, reason)
-            if self.alert_fn is not None:
-                self.alert_fn(f"[recon] FLATTEN FAILED: {exc} — position may be live, retrying")
+            self._alert(f"[recon] FLATTEN FAILED: {exc} — position may be live, retrying")
             return False
+
+    def _alert(self, message: str) -> None:
+        """Best-effort alert; never raises so an alerting outage can't block a flatten."""
+        if self.alert_fn is None:
+            return
+        try:
+            self.alert_fn(message)
+        except Exception as exc:
+            log.error("[recon] alert delivery failed (continuing): %s", exc)

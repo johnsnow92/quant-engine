@@ -19,6 +19,16 @@ def test_valid_order_passes():
     assert guard.check(order) is order
 
 
+def test_order_rejects_non_finite_qty():
+    with pytest.raises(ValueError, match="qty must be finite"):
+        Order("BTCUSD-PERP", "buy", float("nan"), 63_000.0)
+
+
+def test_order_rejects_non_finite_price():
+    with pytest.raises(ValueError, match="price must be finite"):
+        Order("BTCUSD-PERP", "buy", 0.04, float("inf"))
+
+
 def test_rejects_oversized_notional():
     guard = make_guard()
     with pytest.raises(GuardRejection):

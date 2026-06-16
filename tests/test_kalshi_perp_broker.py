@@ -203,3 +203,11 @@ def test_leg_snapshot_feeds_reconcile():
     )
     assert net_delta(snap) == pytest.approx(0.0)
     assert reconcile(snap).ok
+
+
+def test_missing_market_positions_raises():
+    # A malformed payload missing the key must NOT be read as flat 0.0.
+    reader = _make_reader()
+    reader.session.get.return_value = _resp({"foo": "bar"})
+    with pytest.raises(KalshiDataError, match="missing 'market_positions'"):
+        reader.position_btc("BTCUSD-PERP")

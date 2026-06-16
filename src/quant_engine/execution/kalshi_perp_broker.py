@@ -133,7 +133,11 @@ class KalshiPerpReader:
         """Signed base-unit position (+ long / - short). Absent ticker = flat."""
         prod = self.product(instrument)
         data = self._get(_PATH_POSITIONS)
-        for mp in data.get("market_positions") or []:
+        if "market_positions" not in data:
+            raise KalshiDataError(
+                "Kalshi positions payload missing 'market_positions' — refusing to report flat"
+            )
+        for mp in data["market_positions"] or []:
             if mp.get("ticker") == prod.ticker:
                 contracts = float(mp.get("position") or 0)
                 return contracts * prod.btc_per_contract

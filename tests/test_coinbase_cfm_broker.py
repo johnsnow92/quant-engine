@@ -173,3 +173,12 @@ def test_leg_snapshot_feeds_reconcile():
     result = reconcile(snap)
     assert result.ok
     assert result.should_flatten is False
+
+
+def test_unknown_side_raises():
+    # An unrecognized side must NOT be silently treated as long (wrong sign to recon).
+    assert pytest.raises(CfmDataError, _signed_size, {"number_of_contracts": "4", "side": "WEIRD"}, 0.01)
+
+
+def test_missing_side_raises():
+    assert pytest.raises(CfmDataError, _signed_size, {"number_of_contracts": "4"}, 0.01)
