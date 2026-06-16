@@ -94,3 +94,18 @@ def test_material_rate_zero_expected_cannot_verify():
     ok, reason = verify_funding(obs)
     assert ok is False
     assert "expected funding is 0" in reason
+
+
+def test_small_rate_large_notional_uses_relative_band():
+    # 0.4%/yr is below the dead-band rate floor, but on a large notional the
+    # expected funding is material — a 3x interval error must still be caught,
+    # and a correct realized must still pass via the relative band (not the
+    # absolute dead-band shortcut).
+    base = FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.004, 168.0, 0.0)
+    exp = expected_funding_usd(base)
+    assert abs(exp) > 1.0                                  # material despite the tiny rate
+    bad = verify_funding(FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.004, 168.0, exp * 3.0))
+    assert bad[0] is False
+    assert "MAGNITUDE mismatch" in bad[1]
+    ok2, _ = verify_funding(FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.004, 168.0, exp))
+    assert ok2

@@ -23,7 +23,7 @@ class PerpOrderRefused(Exception):
     """Raised at the order boundary when an order must not be placed."""
 
 
-def assert_perp_venue(venue: str) -> None:
+def assert_perp_venue(venue: str | None) -> None:
     """Fail-closed venue check: refuse anything not exactly a perp venue.
 
     Empty/None/whitespace is refused (fail-closed), as is any venue outside
@@ -36,7 +36,7 @@ def assert_perp_venue(venue: str) -> None:
         )
 
 
-def authorize_leg(venue: str, gate_result: GateResult | None) -> None:
+def authorize_leg(venue: str | None, gate_result: GateResult | None) -> None:
     """Authorize one leg for live placement, or raise ``PerpOrderRefused``.
 
     The live ``submit_order`` path calls this before every order. BOTH must hold:

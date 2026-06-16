@@ -139,7 +139,11 @@ class KalshiPerpReader:
             )
         for mp in data["market_positions"] or []:
             if mp.get("ticker") == prod.ticker:
-                contracts = float(mp.get("position") or 0)
+                raw = mp.get("position") or 0
+                try:
+                    contracts = float(raw)
+                except (TypeError, ValueError) as exc:
+                    raise KalshiDataError(f"Kalshi position not numeric: {raw!r}") from exc
                 return contracts * prod.btc_per_contract
         return 0.0
 
@@ -168,8 +172,12 @@ class KalshiPerpReader:
         rate = market.get("funding_rate")
         if rate is None:
             raise KalshiDataError(f"no funding rate for {prod.ticker}")
+        try:
+            rate_f = float(rate)
+        except (TypeError, ValueError) as exc:
+            raise KalshiDataError(f"Kalshi funding_rate not numeric: {rate!r}") from exc
         intervals_per_year = _HOURS_PER_YEAR / prod.funding_interval_hours
-        return float(rate) * intervals_per_year
+        return rate_f * intervals_per_year
 
     def leg_snapshot(self, instrument: str) -> LegSnapshot:
         """The reconciler's per-cycle input for the long (Kalshi) leg."""

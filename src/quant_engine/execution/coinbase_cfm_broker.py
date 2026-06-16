@@ -155,7 +155,10 @@ def _signed_size(pos: dict, contract_size_base: float) -> float:
     """
     net = pos.get("net_size")
     if net is not None:
-        return float(net)
+        try:
+            return float(net)
+        except (TypeError, ValueError) as exc:
+            raise CfmDataError(f"CFM net_size not numeric: {net!r}") from exc
     contracts = pos.get("number_of_contracts")
     if contracts is None:
         raise CfmDataError("CFM position has neither net_size nor number_of_contracts")
@@ -166,7 +169,11 @@ def _signed_size(pos: dict, contract_size_base: float) -> float:
         sign = 1.0
     else:
         raise CfmDataError(f"CFM position has unrecognized side {pos.get('side')!r} — refusing to guess")
-    return sign * float(contracts) * contract_size_base
+    try:
+        contracts_f = float(contracts)
+    except (TypeError, ValueError) as exc:
+        raise CfmDataError(f"CFM number_of_contracts not numeric: {contracts!r}") from exc
+    return sign * contracts_f * contract_size_base
 
 
 def _margin_buffer_pct(summary: dict) -> float:
