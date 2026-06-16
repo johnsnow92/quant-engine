@@ -1,0 +1,152 @@
+"""Reconciliation daemon loop — spec docs/plans/07 §4.4 / build step 5 (driver).
+
+`reconcile.py` is the pure safety decision; this is the periodic driver that
+wraps it for autonomous operation. Each tick:
+
+  1. Enforce the dead-man's-switch first — if too long has elapsed since the last
+     successful reconciliation, flatten defensively (a stalled monitor must not
+     leave a live position unwatched).
+  2. Pull a fresh position snapshot from both read-only adapters.
+  3. Reconcile; on any breach (delta drift, margin-floor) call the injected
+     flatten action + alert.
+
+The clock, sleep, and flatten/alert actions are all injected, so the loop is
+fully unit-testable with no real venue, no real time, and no real order
+placement. In shadow the flatten action is a logging no-op; in live it routes a
+both-legs flatten through the executor. The daemon never decides economics —
+only safety.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Callable
+
+from .reconcile import (
+    PositionSnapshot,
+    ReconConfig,
+    ReconResult,
+    heartbeat_stale,
+    reconcile,
+)
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class ReconTick:
+    """The outcome of one daemon cycle."""
+    ok: bool
+    flattened: bool
+    reason: str
+    recon_result: ReconResult | None
+    epoch: float            # this tick's recon time — feed forward as last_recon_epoch
+
+
+@dataclass
+class ReconDaemon:
+    """Periodic safety monitor over an open two-leg perp position.
+
+    ``long_reader`` / ``short_reader`` are the read-only adapters; only
+    ``leg_snapshot`` is called. ``flatten_fn`` performs the both-legs flatten
+    (a no-op logger in shadow); ``now_fn`` / ``sleep_fn`` are injected so the
+    loop is testable without wall-clock time.
+    """
+    long_reader: object
+    short_reader: object
+    flatten_fn: Callable[[str], None]
+    now_fn: Callable[[], float]
+    instrument: str = "BTCUSD-PERP"
+    cfg: ReconConfig = field(default_factory=ReconConfig)
+    alert_fn: Callable[[str], None] | None = None
+
+    def tick(self, last_recon_epoch: float) -> ReconTick:
+        """One reconciliation cycle against the live (or faked) venue snapshots."""
+        now = self.now_fn()
+
+        # Dead-man's-switch first: a stale gap means flatten regardless of reads.
+        if heartbeat_stale(last_recon_epoch, now, self.cfg):
+            reason = f"heartbeat stale: {now - last_recon_epoch:.0f}s since last recon"
+            flattened = self._flatten(reason)
+            return ReconTick(ok=False, flattened=flattened, reason=reason, recon_result=None, epoch=now)
+
+        # A venue read that raises mid-position must not crash the monitor and leave
+        # the position unwatched — treat it as unverifiable and flatten defensively.
+        try:
+            snap = PositionSnapshot(
+                long=self.long_reader.leg_snapshot(self.instrument),
+                short=self.short_reader.leg_snapshot(self.instrument),
+            )
+        except Exception as exc:
+            reason = f"snapshot read failed ({exc}) — position unverifiable, flattening defensively"
+            flattened = self._flatten(reason)
+            return ReconTick(ok=False, flattened=flattened, reason=reason, recon_result=None, epoch=now)
+
+        result = reconcile(snap, self.cfg)
+        if result.should_flatten:
+            reason = "; ".join(result.breaches)
+            flattened = self._flatten(reason)
+            return ReconTick(ok=False, flattened=flattened, reason=reason, recon_result=result, epoch=now)
+
+        return ReconTick(ok=True, flattened=False, reason="", recon_result=result, epoch=now)
+
+    def run(
+        self,
+        *,
+        interval_s: float,
+        sleep_fn: Callable[[float], None],
+        should_stop: Callable[[], bool],
+        last_recon_epoch: float | None = None,
+    ) -> list[ReconTick]:
+        """Drive ticks until ``should_stop()`` or a successful flatten.
+
+        Breaks once a flatten actually completes — the position is flat, so there
+        is nothing to monitor until a re-entry restarts the daemon. A flatten that
+        FAILED (``flattened=False`` on a breach tick) does not break: the loop
+        keeps ticking and retries, since the position may still be live.
+        """
+        epoch = last_recon_epoch if last_recon_epoch is not None else self.now_fn()
+        ticks: list[ReconTick] = []
+        while not should_stop():
+            tick = self.tick(epoch)
+            ticks.append(tick)
+            if tick.flattened:
+                break
+            # Advance the heartbeat baseline only on a clean reconciliation. A
+            # breach tick whose flatten FAILED keeps the prior epoch, so the
+            # dead-man's-switch re-fires next cycle instead of resetting its timer
+            # on a position that was never verified flat.
+            if tick.ok:
+                epoch = tick.epoch
+            sleep_fn(interval_s)
+        return ticks
+
+    # ------------------------------------------------------------------
+
+    def _flatten(self, reason: str) -> bool:
+        """Attempt the flatten; return True only if it actually completed.
+
+        A flatten that itself raises must not propagate and kill the loop — the
+        position may still be live, so we alert CRITICAL and report failure so the
+        run loop keeps monitoring and retrying rather than breaking on a position
+        it never actually closed.
+        """
+        log.critical("[recon] FLATTEN — %s", reason)
+        self._alert(f"[recon] auto-flatten: {reason}")
+        try:
+            self.flatten_fn(reason)
+            return True
+        except Exception as exc:
+            log.critical("[recon] FLATTEN FAILED (%s) — position may be live, will retry: %s",
+                         exc, reason)
+            self._alert(f"[recon] FLATTEN FAILED: {exc} — position may be live, retrying")
+            return False
+
+    def _alert(self, message: str) -> None:
+        """Best-effort alert; never raises so an alerting outage can't block a flatten."""
+        if self.alert_fn is None:
+            return
+        try:
+            self.alert_fn(message)
+        except Exception as exc:
+            log.error("[recon] alert delivery failed (continuing): %s", exc)

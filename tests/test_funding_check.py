@@ -1,0 +1,111 @@
+"""Funding-convention verification — spec docs/plans/07 §4.5."""
+from __future__ import annotations
+
+import pytest
+
+from quant_engine.execution.funding_check import (
+    FundingObservation,
+    expected_funding_usd,
+    verify_funding,
+)
+
+
+def _short(realized: float, rate: float = 0.06, elapsed: float = 168.0) -> FundingObservation:
+    # Short 0.04 BTC @ $63,000, +6%/yr funding, one week.
+    return FundingObservation(
+        venue="coinbase-futures",
+        position_btc=-0.04,
+        mark_price_usd=63_000.0,
+        stated_rate_annual=rate,
+        elapsed_hours=elapsed,
+        realized_funding_usd=realized,
+    )
+
+
+def test_short_receives_long_pays():
+    short = _short(realized=0.0)
+    assert expected_funding_usd(short) > 0.0          # short receives when rate>0
+    long = FundingObservation("kalshi-perp", 0.04, 63_000.0, 0.06, 168.0, 0.0)
+    assert expected_funding_usd(long) < 0.0            # long pays when rate>0
+
+
+def test_negative_rate_flips_direction():
+    # Rate negative → longs receive, shorts pay.
+    short = _short(realized=0.0, rate=-0.06)
+    assert expected_funding_usd(short) < 0.0
+
+
+def test_correct_funding_passes():
+    exp = expected_funding_usd(_short(realized=0.0))
+    ok, reason = verify_funding(_short(realized=exp))
+    assert ok
+    assert reason == ""
+
+
+def test_sign_mismatch_fails():
+    exp = expected_funding_usd(_short(realized=0.0))      # positive (short receives)
+    ok, reason = verify_funding(_short(realized=-exp))    # realized has wrong sign
+    assert ok is False
+    assert "SIGN mismatch" in reason
+
+
+def test_interval_magnitude_mismatch_fails():
+    exp = expected_funding_usd(_short(realized=0.0))
+    # 8h-vs-hourly bug makes realized ~3x expected → magnitude fail.
+    ok, reason = verify_funding(_short(realized=exp * 3.0))
+    assert ok is False
+    assert "MAGNITUDE mismatch" in reason
+
+
+def test_zero_rate_leg_tolerates_small_noise():
+    # The 0%-funding (dead-band) leg: expected ≈0, a few cents of realized is fine.
+    obs = FundingObservation("kalshi-perp", 0.04, 63_000.0, 0.0, 168.0, 0.20)
+    ok, _ = verify_funding(obs)
+    assert ok
+
+
+def test_micro_size_interval_error_still_caught():
+    # Sub-dollar expected funding: a 3x interval error is below any $1 abs tolerance,
+    # but the relative band (material rate) still catches it — the whole point.
+    base = FundingObservation("coinbase-futures", -0.001, 63_000.0, 0.06, 1.0, 0.0)
+    exp = expected_funding_usd(base)                      # ~ $0.0004, far below $1
+    ok, reason = verify_funding(
+        FundingObservation("coinbase-futures", -0.001, 63_000.0, 0.06, 1.0, exp * 3.0)
+    )
+    assert ok is False
+    assert "MAGNITUDE mismatch" in reason
+
+
+def test_relative_tolerance_passes_at_scale():
+    obs = FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.06, 168.0, 0.0)
+    exp = expected_funding_usd(obs)                       # large notional → ~$290
+    realized = exp * 1.05                                 # 5% off, under 10% rel band
+    ok, _ = verify_funding(
+        FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.06, 168.0, realized)
+    )
+    assert ok
+    assert exp == pytest.approx(290.0, abs=2.0)
+
+
+def test_material_rate_zero_expected_cannot_verify():
+    # Material rate but zero position => expected funding 0 => NOT the dead-band
+    # path; the convention can't be verified, so it must not silently pass.
+    obs = FundingObservation("coinbase-futures", 0.0, 63_000.0, 0.06, 168.0, 0.0)
+    ok, reason = verify_funding(obs)
+    assert ok is False
+    assert "expected funding is 0" in reason
+
+
+def test_small_rate_large_notional_uses_relative_band():
+    # 0.4%/yr is below the dead-band rate floor, but on a large notional the
+    # expected funding is material — a 3x interval error must still be caught,
+    # and a correct realized must still pass via the relative band (not the
+    # absolute dead-band shortcut).
+    base = FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.004, 168.0, 0.0)
+    exp = expected_funding_usd(base)
+    assert abs(exp) > 1.0                                  # material despite the tiny rate
+    bad = verify_funding(FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.004, 168.0, exp * 3.0))
+    assert bad[0] is False
+    assert "MAGNITUDE mismatch" in bad[1]
+    ok2, _ = verify_funding(FundingObservation("coinbase-futures", -4.0, 63_000.0, 0.004, 168.0, exp))
+    assert ok2
