@@ -200,6 +200,10 @@ def _amount(summary: dict, *keys: str) -> float | None:
         value = summary.get(key)
         if isinstance(value, dict):
             value = value.get("value")
-        if value is not None:
+        if value is None:
+            continue
+        try:
             return float(value)
+        except (TypeError, ValueError):
+            continue
     return None

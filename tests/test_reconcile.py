@@ -71,3 +71,9 @@ def test_non_finite_position_flattens():
     res = reconcile(_snap(short_btc=float("nan")), CFG)
     assert res.should_flatten is True
     assert any("non-finite net delta" in b for b in res.breaches)
+
+
+def test_heartbeat_stale_fails_closed_on_non_finite():
+    # Non-finite timing must read as STALE so the dead-man's-switch still fires.
+    assert heartbeat_stale(float("nan"), 100.0, CFG) is True
+    assert heartbeat_stale(0.0, float("inf"), CFG) is True

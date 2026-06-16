@@ -123,3 +123,11 @@ def test_non_finite_day_pnl_fails_closed():
     res = check_all(_valid(), CFG, day_pnl_usd=float("inf"))
     assert res.passed is False
     assert any("day_pnl_usd" in f for f in res.failures)
+
+
+def test_non_string_venue_fails_closed():
+    # A None/non-string venue must REJECT, not raise — keeps check_all fail-closed.
+    p = dataclasses.replace(_valid(), long_venue=None)
+    res = check_all(p, CFG)
+    assert res.passed is False
+    assert any("allowlist" in f for f in res.failures)

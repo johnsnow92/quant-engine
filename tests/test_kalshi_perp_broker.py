@@ -211,3 +211,11 @@ def test_missing_market_positions_raises():
     reader.session.get.return_value = _resp({"foo": "bar"})
     with pytest.raises(KalshiDataError, match="missing 'market_positions'"):
         reader.position_btc("BTCUSD-PERP")
+
+
+def test_kalshi_margin_buffer_skips_malformed_first_key():
+    summary = {
+        "portfolio_value": "oops", "available_balance": "1300",
+        "maintenance_margin": "x", "required_margin": "1000",
+    }
+    assert _kalshi_margin_buffer_pct(summary) == pytest.approx(30.0)

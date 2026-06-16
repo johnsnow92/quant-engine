@@ -49,7 +49,7 @@ def authorize_leg(venue: str | None, gate_result: GateResult | None) -> None:
         raise PerpOrderRefused(
             "no pre-trade gate result — order refused (gates must run before placement)"
         )
-    if not gate_result.passed:
+    if (not gate_result.passed) or gate_result.failures:
         n = len(gate_result.failures)
         raise PerpOrderRefused(
             f"pre-trade gates did not pass ({n} failure(s)) — order refused"

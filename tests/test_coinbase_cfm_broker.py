@@ -182,3 +182,12 @@ def test_unknown_side_raises():
 
 def test_missing_side_raises():
     assert pytest.raises(CfmDataError, _signed_size, {"number_of_contracts": "4"}, 0.01)
+
+
+def test_margin_buffer_skips_malformed_first_key():
+    # A malformed first candidate key must fall through to the next parseable one.
+    summary = {
+        "total_balance": "oops", "cfm_usd_balance": "1300",
+        "liquidation_threshold": "x", "maintenance_margin": "1000",
+    }
+    assert _margin_buffer_pct(summary) == pytest.approx(30.0)

@@ -81,6 +81,17 @@ def reconcile(snap: PositionSnapshot, cfg: ReconConfig | None = None) -> ReconRe
 def heartbeat_stale(
     last_recon_epoch: float, now_epoch: float, cfg: ReconConfig | None = None
 ) -> bool:
-    """Dead-man's-switch: True if no recon write within heartbeat_max → flatten."""
+    """Dead-man's-switch: True if no recon write within heartbeat_max → flatten.
+
+    Fail-closed on non-finite timing: a NaN epoch/config would make the
+    comparison False and silently suppress the flatten, so treat it as stale.
+    """
     cfg = cfg or ReconConfig()
+    if (
+        not math.isfinite(last_recon_epoch)
+        or not math.isfinite(now_epoch)
+        or not math.isfinite(cfg.heartbeat_max_seconds)
+        or cfg.heartbeat_max_seconds <= 0.0
+    ):
+        return True
     return (now_epoch - last_recon_epoch) > cfg.heartbeat_max_seconds

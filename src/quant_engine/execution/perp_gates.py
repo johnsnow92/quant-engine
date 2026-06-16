@@ -69,7 +69,8 @@ class GateResult:
 
 def gate_allowlist(p: PerpTradeProposal, cfg: PerpGateConfig) -> tuple[bool, str]:
     for venue in (p.long_venue, p.short_venue):
-        if venue.strip().lower() not in PERP_VENUES:
+        normalized = venue.strip().lower() if isinstance(venue, str) else ""
+        if normalized not in PERP_VENUES:
             return False, f"venue {venue!r} not in perp allowlist {sorted(PERP_VENUES)}"
     return True, ""
 

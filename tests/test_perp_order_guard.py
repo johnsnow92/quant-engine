@@ -57,3 +57,9 @@ def test_authorize_refused_on_bad_venue_even_with_passed_gates():
     # Venue check is first and fail-closed — passing gates can't rescue a bad venue.
     with pytest.raises(PerpOrderRefused, match="not a perp venue"):
         authorize_leg("coinbase-spot", GateResult(passed=True, failures=[]))
+
+
+def test_authorize_refused_on_inconsistent_gate_result():
+    # passed=True but failures present is logically inconsistent — refuse the order.
+    with pytest.raises(PerpOrderRefused):
+        authorize_leg("kalshi-perp", GateResult(passed=True, failures=["sneaky"]))
