@@ -68,8 +68,10 @@ jobs:
           fi
 
       - name: Log regime status
+        env:
+          REGIME_ON: ${{ steps.regime.outputs.regime_on }}
         run: |
-          echo "Regime ON: ${{ steps.regime.outputs.regime_on }}"
+          echo "Regime ON: $REGIME_ON"
 
   # Gate: downstream jobs (e.g. execute carry) only run when regime is ON.
   # Uncomment and fill in when the live execution adapter is ready.
