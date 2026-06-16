@@ -96,6 +96,7 @@ def main() -> int:
         log.warning(
             "perp shadow read/cycle failed (adapter endpoints are confirm-at-micro): %s",
             exc,
+            exc_info=True,
         )
         return 0
 

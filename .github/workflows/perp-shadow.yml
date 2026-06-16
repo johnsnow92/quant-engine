@@ -44,9 +44,10 @@ jobs:
           COINBASE_CFM_PRIVATE_KEY: ${{ secrets.COINBASE_CFM_PRIVATE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALWAYS_ALERT: ${{ github.event.inputs.always_alert }}
         run: |
           FLAGS=""
-          if [[ "${{ github.event.inputs.always_alert }}" == "true" ]]; then
+          if [[ "$ALWAYS_ALERT" == "true" ]]; then
             FLAGS="--always-alert"
           fi
           uv run python scripts/run_perp_shadow.py $FLAGS
