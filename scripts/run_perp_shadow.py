@@ -47,10 +47,14 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
         resp = requests.post(
             url, json={"chat_id": chat_id, "text": text}, timeout=_TELEGRAM_TIMEOUT
         )
-        return resp.status_code == 200
     except requests.RequestException as exc:
         log.warning("Telegram send failed: %s", exc)
         return False
+    if resp.status_code != 200:
+        # Non-200 (bad token/chat_id, rate limit) would otherwise be a silent miss.
+        log.warning("Telegram send failed: HTTP %s %s", resp.status_code, resp.text[:200])
+        return False
+    return True
 
 
 def main() -> int:

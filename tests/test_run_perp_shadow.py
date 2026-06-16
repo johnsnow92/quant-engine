@@ -94,3 +94,15 @@ def test_read_failure_exits_zero(monkeypatch, caplog):
 
     assert rc == 0
     assert "read/cycle failed" in caplog.text
+
+
+def test_send_telegram_logs_non_200(caplog):
+    # A bad token / rate limit (non-200) must not be a silent alert miss.
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.text = "Unauthorized"
+    with patch.object(run_perp_shadow.requests, "post", return_value=resp), \
+            caplog.at_level("WARNING"):
+        ok = run_perp_shadow.send_telegram("tok", "chat", "hi")
+    assert ok is False
+    assert "Telegram send failed: HTTP 401" in caplog.text
