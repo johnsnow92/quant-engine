@@ -47,9 +47,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COINDESK_API_KEY: ${{ secrets.COINDESK_API_KEY }}
+          ALWAYS_ALERT: ${{ github.event.inputs.always_alert }}
         run: |
           EXTRA_FLAGS="--alert-on-change-only"
-          if [[ "${{ github.event.inputs.always_alert }}" == "true" ]]; then
+          if [[ "$ALWAYS_ALERT" == "true" ]]; then
             EXTRA_FLAGS="--always-alert"
           fi
           set +e
@@ -67,8 +68,10 @@ jobs:
           fi
 
       - name: Log regime status
+        env:
+          REGIME_ON: ${{ steps.regime.outputs.regime_on }}
         run: |
-          echo "Regime ON: ${{ steps.regime.outputs.regime_on }}"
+          echo "Regime ON: $REGIME_ON"
 
   # Gate: downstream jobs (e.g. execute carry) only run when regime is ON.
   # Uncomment and fill in when the live execution adapter is ready.
