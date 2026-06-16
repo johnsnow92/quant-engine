@@ -129,3 +129,48 @@ def test_naked_leg_when_unwind_submit_succeeds_but_leg_not_flat():
     assert res.is_safe is False
     assert res.unwind_fill is not None       # the submit succeeded...
     assert "did not flatten" in res.error    # ...but verify-flat caught the residual
+
+
+def test_naked_leg_when_flatness_unverifiable():
+    """Verify-flat: the unwind 'fills' but the position query RAISES (transient venue
+    error). Flatness is unverifiable, so it escalates to NAKED_LEG — never assume flat."""
+
+    class _UnwindThenPositionRaises:
+        def submit_order(self, order: Order) -> Fill:
+            return Fill(order.instrument, order.side, order.qty, order.price, 0.0)
+
+        def position(self, instrument: str) -> float:
+            raise RuntimeError("venue position query timed out")
+
+    longb = _UnwindThenPositionRaises()
+    shortb = _paper("OTHER")    # short rejects → triggers the unwind
+    ex = TwoLegExecutor(longb, shortb)
+
+    res = ex.execute(
+        Order("BTC-K", "buy", 0.01, 63_000.0),
+        Order("BTC-CB", "sell", 0.01, 63_010.0),
+    )
+    assert res.outcome is TwoLegOutcome.NAKED_LEG
+    assert res.is_safe is False
+    assert "unverifiable" in res.error
+
+
+def test_unwound_when_broker_cannot_report_position():
+    """A broker with no position() method can't be verified flat; a successful unwind
+    submit is taken as assume-flat → UNWOUND (the shadow-acceptable fall-through)."""
+
+    class _UnwindNoPositionMethod:
+        def submit_order(self, order: Order) -> Fill:
+            return Fill(order.instrument, order.side, order.qty, order.price, 0.0)
+        # deliberately no position() method
+
+    longb = _UnwindNoPositionMethod()
+    shortb = _paper("OTHER")
+    ex = TwoLegExecutor(longb, shortb)
+
+    res = ex.execute(
+        Order("BTC-K", "buy", 0.01, 63_000.0),
+        Order("BTC-CB", "sell", 0.01, 63_010.0),
+    )
+    assert res.outcome is TwoLegOutcome.UNWOUND
+    assert res.is_safe

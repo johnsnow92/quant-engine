@@ -66,18 +66,17 @@ def _reverse(order: Order) -> Order:
 
 
 def _leg_position(broker: object, instrument: str) -> float | None:
-    """The broker's signed position in ``instrument``, or None if it can't report.
+    """The broker's signed position in ``instrument``.
 
-    None = 'cannot verify' (broker exposes no ``position()``); the caller treats that
-    as assume-flat rather than raising a false naked-leg alarm.
+    Returns None ONLY when the broker exposes no ``position()`` method — a static
+    capability gap the caller treats as assume-flat. If ``position()`` EXISTS but
+    raises, the exception propagates: a transient query failure during verify-flat
+    must not be read as 'flat', so the caller escalates to NAKED_LEG.
     """
     pos_fn = getattr(broker, "position", None)
     if pos_fn is None:
         return None
-    try:
-        return pos_fn(instrument)
-    except Exception:
-        return None
+    return pos_fn(instrument)
 
 
 @dataclass
@@ -145,8 +144,25 @@ class TwoLegExecutor:
 
         # Verify-flat: a 'successful' unwind submit is not proof the leg closed. A
         # partial or no-op reduce that leaves exposure is still a naked leg — confirm
-        # the broker reports the long flat before calling it UNWOUND.
-        residual = _leg_position(self.long_broker, long_order.instrument)
+        # the broker reports the long flat before calling it UNWOUND. A position
+        # query that RAISES means flatness is unverifiable → escalate to NAKED_LEG
+        # rather than assume flat (only a missing position() method assumes flat).
+        try:
+            residual = _leg_position(self.long_broker, long_order.instrument)
+        except Exception as exc:
+            log.critical(
+                "[%s] NAKED LEG — unwind submitted but flatness UNVERIFIABLE "
+                "(position query failed: %s)",
+                self.mode,
+                exc,
+            )
+            return TwoLegResult(
+                TwoLegOutcome.NAKED_LEG,
+                long_fill=long_fill,
+                unwind_fill=unwind,
+                error=f"unwind flatness unverifiable: position query failed ({exc}); "
+                      f"short_failed={short_error}",
+            )
         if residual is not None and abs(residual) > _FLAT_EPS:
             log.critical(
                 "[%s] NAKED LEG — unwind did not flatten long leg: residual=%.8f",
