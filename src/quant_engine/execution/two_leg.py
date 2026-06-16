@@ -149,7 +149,7 @@ class TwoLegExecutor:
         # rather than assume flat (only a missing position() method assumes flat).
         try:
             residual = _leg_position(self.long_broker, long_order.instrument)
-        except Exception as exc:
+        except Exception as exc:  # BLE001 catch-all intentional: any verify failure → NAKED_LEG
             log.critical(
                 "[%s] NAKED LEG — unwind submitted but flatness UNVERIFIABLE "
                 "(position query failed: %s)",
