@@ -1,0 +1,52 @@
+name: Perp Carry Shadow Loop
+
+# SHADOW ONLY — runs scripts/run_perp_shadow.py, which places nothing (PaperBroker
+# on both legs, read-only adapters). No live execution, no order path. The job is a
+# no-op until the KALSHI_PERP_* / COINBASE_CFM_* read-credential secrets are set.
+
+on:
+  schedule:
+    # Every 6h, offset 30m from the funding-regime watcher so they don't collide.
+    - cron: '30 1,7,13,19 * * *'
+  workflow_dispatch:
+    inputs:
+      always_alert:
+        description: 'Send Telegram every cycle (not just executed/blocked)'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  shadow-cycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run perp shadow cycle (places nothing)
+        env:
+          KALSHI_PERP_KEY_ID: ${{ secrets.KALSHI_PERP_KEY_ID }}
+          KALSHI_PERP_PRIVATE_KEY: ${{ secrets.KALSHI_PERP_PRIVATE_KEY }}
+          COINBASE_CFM_API_KEY_NAME: ${{ secrets.COINBASE_CFM_API_KEY_NAME }}
+          COINBASE_CFM_PRIVATE_KEY: ${{ secrets.COINBASE_CFM_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          FLAGS=""
+          if [[ "${{ github.event.inputs.always_alert }}" == "true" ]]; then
+            FLAGS="--always-alert"
+          fi
+          uv run python scripts/run_perp_shadow.py $FLAGS
