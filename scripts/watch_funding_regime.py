@@ -41,6 +41,18 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
         )
         r.raise_for_status()
         return True
+    except requests.HTTPError as exc:
+        # Surface Telegram's own error description ("chat not found",
+        # "can't parse entities", ...) — the bare HTTP status hides the cause,
+        # which makes a misconfigured alert pipe impossible to diagnose.
+        detail = ""
+        if exc.response is not None:
+            try:
+                detail = exc.response.json().get("description", "")
+            except ValueError:
+                detail = exc.response.text[:200]
+        log.warning("Telegram send failed: %s — %s", exc, detail)
+        return False
     except Exception as exc:
         log.warning("Telegram send failed: %s", exc)
         return False
