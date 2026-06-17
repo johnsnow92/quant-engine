@@ -66,23 +66,52 @@ def save_state(path: Path, state: RegimeState) -> None:
 
 
 def build_alert(state: RegimeState, prev_on: bool | None) -> str:
-    if state.is_on and prev_on is False:
+    deploy_action = "Action: deploy capital to quant-engine carry strategy or review gates."
+    if not state.is_on:
+        header = "⚪️ *Quant-engine regime OFF — carry conditions not met*"
+        action = "Action: none — forced/heartbeat alert confirming the watcher is live."
+    elif prev_on is False:
         header = "🟢 *Quant-engine regime TURNED ON*"
-    elif state.is_on and prev_on is None:
+        action = deploy_action
+    elif prev_on is None:
         header = "🟢 *Quant-engine regime is ON*"
+        action = deploy_action
     else:
         header = "🟢 *Quant-engine regime ON — carry conditions active*"
+        action = deploy_action
 
     lines = [
         header,
         "",
-        f"```",
+        "```",
         state.summary(),
-        f"```",
+        "```",
         "",
-        "Action: deploy capital to quant-engine carry strategy or review gates.",
+        action,
     ]
     return "\n".join(lines)
+
+
+def should_send_alert(
+    is_on: bool,
+    *,
+    always_alert: bool,
+    alert_on_change_only: bool,
+    prev_on: bool | None,
+) -> bool:
+    """Decide whether to fire a Telegram alert this cycle.
+
+    --always-alert fires regardless of regime state (manual wiring test or
+    daily digest). Otherwise only ON states alert: on-change-only fires solely
+    on the OFF->ON transition; the default fires whenever the regime is ON.
+    """
+    if always_alert:
+        return True
+    if not is_on:
+        return False
+    if alert_on_change_only:
+        return prev_on is not True  # only on OFF->ON transition
+    return True
 
 
 def main() -> None:
@@ -150,14 +179,12 @@ def main() -> None:
     if args.state_file:
         save_state(args.state_file, state)
 
-    should_alert = False
-    if state.is_on:
-        if args.always_alert:
-            should_alert = True
-        elif args.alert_on_change_only:
-            should_alert = (prev_on is not True)  # alert only on OFF→ON transition
-        else:
-            should_alert = True  # default: alert whenever ON
+    should_alert = should_send_alert(
+        state.is_on,
+        always_alert=args.always_alert,
+        alert_on_change_only=args.alert_on_change_only,
+        prev_on=prev_on,
+    )
 
     if should_alert:
         if telegram_token and telegram_chat_id:
