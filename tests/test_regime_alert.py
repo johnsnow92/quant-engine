@@ -92,3 +92,34 @@ def test_build_alert_off_header_is_honest():
 def test_build_alert_on_header():
     msg = build_alert(_state(True), prev_on=False)
     assert "TURNED ON" in msg
+
+
+def test_send_telegram_failure_surfaces_reason_without_leaking_token(caplog):
+    from unittest.mock import patch
+
+    # Stands in for the bot token; the raised HTTPError embeds it in the URL
+    # exactly as requests does. The log must never echo it back.
+    leak_canary = "do-not-log-this-value"
+    raised_url = (
+        "400 Client Error: Bad Request for url: "
+        f"https://api.telegram.org/bot{leak_canary}/sendMessage"
+    )
+
+    class _FakeResp:
+        status_code = 400
+        reason = "Bad Request"
+        text = '{"ok":false,"description":"Bad Request: chat not found"}'
+
+        def json(self):
+            return {"ok": False, "description": "Bad Request: chat not found"}
+
+        def raise_for_status(self):
+            raise _MOD.requests.HTTPError(raised_url, response=self)
+
+    with patch.object(_MOD.requests, "post", return_value=_FakeResp()):
+        with caplog.at_level("WARNING"):
+            ok = _MOD.send_telegram(leak_canary, "999", "hi")
+
+    assert ok is False
+    assert "chat not found" in caplog.text        # useful reason surfaced
+    assert leak_canary not in caplog.text         # token-equivalent never logged

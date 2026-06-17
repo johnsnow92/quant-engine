@@ -43,18 +43,23 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
         return True
     except requests.HTTPError as exc:
         # Surface Telegram's own error description ("chat not found",
-        # "can't parse entities", ...) — the bare HTTP status hides the cause,
-        # which makes a misconfigured alert pipe impossible to diagnose.
+        # "can't parse entities", ...) but NEVER log the raw exception — its
+        # string embeds the request URL, which contains the bot token.
+        resp = exc.response
+        status = resp.status_code if resp is not None else "?"
+        reason = resp.reason if resp is not None else ""
         detail = ""
-        if exc.response is not None:
+        if resp is not None:
             try:
-                detail = exc.response.json().get("description", "")
+                detail = resp.json().get("description", "")
             except ValueError:
-                detail = exc.response.text[:200]
-        log.warning("Telegram send failed: %s — %s", exc, detail)
+                detail = resp.text[:200]
+        log.warning("Telegram send failed: HTTP %s %s — %s", status, reason, detail)
         return False
     except Exception as exc:
-        log.warning("Telegram send failed: %s", exc)
+        # Connection/timeout errors can also embed the tokenized URL in their
+        # message, so log only the exception type, never str(exc).
+        log.warning("Telegram send failed: %s", type(exc).__name__)
         return False
 
 
@@ -114,8 +119,9 @@ def should_send_alert(
     """Decide whether to fire a Telegram alert this cycle.
 
     --always-alert fires regardless of regime state (manual wiring test or
-    daily digest). Otherwise only ON states alert: on-change-only fires solely
-    on the OFF->ON transition; the default fires whenever the regime is ON.
+    daily digest). Otherwise only ON states alert: on-change-only fires on the
+    OFF->ON transition or when the prior state is unknown (no state file yet);
+    the default fires whenever the regime is ON.
     """
     if always_alert:
         return True
