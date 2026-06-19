@@ -7,6 +7,9 @@ dependencies = [
     "pandas>=2.2",
     "numpy>=1.26",
     "requests>=2.31",
+    # perp broker adapters (src/quant_engine/execution): RSA-PSS signing + CFM Advanced Trade client
+    "cryptography>=42",
+    "coinbase-advanced-py>=1.2",
 ]
 
 [project.optional-dependencies]
