@@ -20,8 +20,8 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from ..analysis.funding_spread import annualized, build_spread, normalize_per_hour
-from ..data.coindesk import CoinDeskClient
 from ..data.cryptocom import CryptoComClient
+from ..data.hyperliquid import HyperliquidClient
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ DEFAULT_SPREAD_THRESHOLD = 0.05
 DEFAULT_CARRY_THRESHOLD = 0.05
 LOOKBACK_BARS = 24       # 24-hour rolling window (1h bars) — directional triggers
 CARRY_LOOKBACK_BARS = 168  # 7-day rolling window (1h bars) — carry trigger
+HOUR_MS = 3_600_000      # milliseconds per hour, for the Hyperliquid query window
 
 
 @dataclass
@@ -41,8 +42,8 @@ class RegimeState:
     is_on: bool
     btc_cc_ann: float       # Crypto.com BTC annualized (last 24h mean)
     btc_carry_ann: float    # Crypto.com BTC annualized (trailing 7d mean) — carry gauge
-    btc_bn_ann: float       # Binance BTC annualized (last 24h mean)
-    btc_spread_ann: float   # Cross-venue spread annualized
+    btc_hl_ann: float       # Hyperliquid BTC annualized (last 24h mean)
+    btc_spread_ann: float   # Cross-venue spread annualized (Crypto.com vs Hyperliquid)
     eth_cc_ann: float
     triggered_by: list[str]  # which condition(s) fired
     checked_at: datetime
@@ -51,11 +52,11 @@ class RegimeState:
         state = "ON" if self.is_on else "OFF"
         lines = [
             f"Funding regime: {state}  ({self.checked_at.strftime('%Y-%m-%d %H:%M UTC')})",
-            f"  BTC Crypto.com {self.btc_cc_ann:+.1%} ann (24h)",
-            f"  BTC carry      {self.btc_carry_ann:+.1%} ann (7d)",
-            f"  BTC Binance    {self.btc_bn_ann:+.1%} ann (24h)",
-            f"  BTC spread     {self.btc_spread_ann:+.1%} ann (24h)",
-            f"  ETH Crypto.com {self.eth_cc_ann:+.1%} ann (24h)",
+            f"  {'BTC Crypto.com':<15} {self.btc_cc_ann:+.1%} ann (24h)",
+            f"  {'BTC carry':<15} {self.btc_carry_ann:+.1%} ann (7d)",
+            f"  {'BTC Hyperliquid':<15} {self.btc_hl_ann:+.1%} ann (24h)",
+            f"  {'BTC spread':<15} {self.btc_spread_ann:+.1%} ann (24h)",
+            f"  {'ETH Crypto.com':<15} {self.eth_cc_ann:+.1%} ann (24h)",
         ]
         if self.triggered_by:
             lines.append(f"  Triggered by: {', '.join(self.triggered_by)}")
@@ -78,14 +79,18 @@ def check_regime(
     cc_interval_hours: float = 1.0,
     cc_btc_perp: str = "BTCUSD-PERP",
     cc_eth_perp: str = "ETHUSD-PERP",
-    bn_btc_instrument: str = "BTC-USDT-VANILLA-PERPETUAL",
-    bn_market: str = "binance",
+    hl_btc_coin: str = "BTC",
     count: int = 300,
 ) -> RegimeState:
-    """Fetch live funding from Crypto.com (required) + Binance/CoinDesk (optional).
+    """Fetch live funding from Crypto.com (required) + Hyperliquid (optional).
 
-    CoinDesk requires COINDESK_API_KEY for funding data. If unavailable, the
-    cross-venue spread check is skipped and single-venue Crypto.com data is used.
+    Hyperliquid's public funding-history API needs no key (unlike the CoinDesk/
+    Binance feed this used to gate on), so the cross-venue spread check works out
+    of the box. If the Hyperliquid call still fails (network/API hiccup), the
+    spread check is skipped and single-venue Crypto.com data is used. This is a
+    data-only read for the regime signal — Hyperliquid is not on the execution
+    venue-legality allowlist (execution/venue_legality.py) and no orders are ever
+    routed there.
     """
     if lookback <= 0 or carry_lookback <= 0:
         raise ValueError("lookback and carry_lookback must be positive integers")
@@ -111,25 +116,28 @@ def check_regime(
     btc_carry_ann = _rolling_mean_ann(cc_btc, n=carry_lookback)
     eth_cc_ann = _rolling_mean_ann(cc_eth, n=lookback)
 
-    # Binance cross-venue spread — requires COINDESK_API_KEY.
-    btc_bn_ann = 0.0
+    # Hyperliquid cross-venue spread — public API, no auth required.
+    btc_hl_ann = 0.0
     btc_spread_ann = 0.0
     try:
-        cd = CoinDeskClient()
-        log.debug("Fetching Binance BTC funding via CoinDesk...")
-        bn_btc = cd.fetch_funding(bn_market, bn_btc_instrument, limit=count)
-        bn_btc = normalize_per_hour(bn_btc)
-        btc_bn_ann = _rolling_mean_ann(bn_btc, n=lookback)
-        spread = build_spread(cc_btc, bn_btc)
+        hl = HyperliquidClient()
+        log.debug("Fetching Hyperliquid BTC funding...")
+        end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        start_ms = end_ms - (count + 24) * HOUR_MS  # buffer for boundary/gap slop
+        hl_btc = hl.fetch_funding_history(hl_btc_coin, start_ms, end_ms)
+        hl_btc["interval_hours"] = 1.0  # Hyperliquid settles hourly
+        hl_btc = normalize_per_hour(hl_btc)
+        btc_hl_ann = _rolling_mean_ann(hl_btc, n=lookback)
+        spread = build_spread(cc_btc, hl_btc)
         btc_spread_ann = _rolling_mean_ann(spread, col="spread_per_hour", n=lookback)
     except Exception as exc:
-        log.info("CoinDesk/Binance unavailable (set COINDESK_API_KEY to enable): %s", exc)
+        log.info("Hyperliquid unavailable, cross-venue spread check skipped: %s", exc)
 
     triggered: list[str] = []
     if abs(btc_cc_ann) >= single_venue_threshold:
         triggered.append(f"BTC Crypto.com {btc_cc_ann:+.1%} (24h)")
-    if btc_bn_ann and abs(btc_bn_ann) >= single_venue_threshold:
-        triggered.append(f"BTC Binance {btc_bn_ann:+.1%} (24h)")
+    if btc_hl_ann and abs(btc_hl_ann) >= single_venue_threshold:
+        triggered.append(f"BTC Hyperliquid {btc_hl_ann:+.1%} (24h)")
     if abs(eth_cc_ann) >= single_venue_threshold:
         triggered.append(f"ETH Crypto.com {eth_cc_ann:+.1%} (24h)")
     # Carry trigger: SIGNED (positive only) BTC perp funding over the 7d window.
@@ -144,7 +152,7 @@ def check_regime(
         is_on=bool(triggered),
         btc_cc_ann=btc_cc_ann,
         btc_carry_ann=btc_carry_ann,
-        btc_bn_ann=btc_bn_ann,
+        btc_hl_ann=btc_hl_ann,
         btc_spread_ann=btc_spread_ann,
         eth_cc_ann=eth_cc_ann,
         triggered_by=triggered,

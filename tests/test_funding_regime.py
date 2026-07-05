@@ -37,14 +37,40 @@ def _split_funding(recent_annual: float, older_annual: float,
 
 
 def _check(cc_btc: pd.DataFrame, cc_eth: pd.DataFrame | None = None, **kwargs) -> RegimeState:
+    """Crypto.com mocked; Hyperliquid mocked to fail (isolates Crypto.com-only logic).
+
+    Hyperliquid needs no API key, so this failure models a genuine transient
+    issue (network/API hiccup), not a missing secret.
+    """
     cc_eth = cc_eth if cc_eth is not None else _const_funding(0.0)
     cc_mock = MagicMock()
     cc_mock.fetch_funding.side_effect = (
         lambda sym, count: cc_btc if "BTC" in sym else cc_eth
     )
     with patch("quant_engine.watchers.funding_regime.CryptoComClient", return_value=cc_mock), \
-         patch("quant_engine.watchers.funding_regime.CoinDeskClient",
-               side_effect=RuntimeError("COINDESK_API_KEY unset")):
+         patch("quant_engine.watchers.funding_regime.HyperliquidClient",
+               side_effect=RuntimeError("Hyperliquid unavailable")):
+        return check_regime(**kwargs)
+
+
+def _check_with_hl(
+    cc_btc: pd.DataFrame,
+    hl_btc: pd.DataFrame,
+    cc_eth: pd.DataFrame | None = None,
+    **kwargs,
+) -> RegimeState:
+    """Like ``_check`` but wires a working Hyperliquid mock instead of failing it."""
+    cc_eth = cc_eth if cc_eth is not None else _const_funding(0.0)
+    cc_mock = MagicMock()
+    cc_mock.fetch_funding.side_effect = (
+        lambda sym, count: cc_btc if "BTC" in sym else cc_eth
+    )
+    hl_mock = MagicMock()
+    hl_mock.fetch_funding_history.side_effect = (
+        lambda coin, start_ms, end_ms: hl_btc
+    )
+    with patch("quant_engine.watchers.funding_regime.CryptoComClient", return_value=cc_mock), \
+         patch("quant_engine.watchers.funding_regime.HyperliquidClient", return_value=hl_mock):
         return check_regime(**kwargs)
 
 
@@ -124,3 +150,53 @@ def test_non_positive_lookback_raises():
         _check(_const_funding(0.06), lookback=0)
     with pytest.raises(ValueError, match="positive"):
         _check(_const_funding(0.06), carry_lookback=-1)
+
+
+# ---------------------------------------------------------------------------
+# Cross-venue spread — repointed off CoinDesk/Binance onto Hyperliquid, which
+# needs no API key. The old CoinDesk path silently no-op'd this whole section
+# without COINDESK_API_KEY; these pin that it now actually works.
+# ---------------------------------------------------------------------------
+
+def test_hyperliquid_single_venue_trigger_fires():
+    hl_btc = _const_funding(0.20)  # 20% ann clears the 15% directional threshold
+    state = _check_with_hl(_const_funding(0.0), hl_btc)
+    assert state.is_on
+    assert state.btc_hl_ann == pytest.approx(0.20, abs=1e-6)
+    assert any("BTC Hyperliquid" in t for t in state.triggered_by)
+
+
+def test_hyperliquid_below_threshold_does_not_trigger():
+    # 5% Hyperliquid ann is below the 15% single-venue threshold; the 2% spread
+    # vs Crypto.com's 3% is below the 5% spread threshold too -> nothing fires.
+    state = _check_with_hl(_const_funding(0.03), _const_funding(0.05))
+    assert state.btc_hl_ann == pytest.approx(0.05, abs=1e-6)
+    assert not any("Hyperliquid" in t for t in state.triggered_by)
+    assert not any("spread" in t for t in state.triggered_by)
+    assert state.is_on is False
+
+
+def test_cross_venue_spread_trigger_fires_from_hyperliquid():
+    # Crypto.com flat at 0%, Hyperliquid flat at 10% -> ~10% spread, clears the
+    # 5% spread threshold even though neither single venue clears 15%.
+    state = _check_with_hl(_const_funding(0.0), _const_funding(0.10))
+    assert state.is_on
+    assert state.btc_spread_ann == pytest.approx(0.10, abs=1e-6)
+    assert any("BTC spread" in t for t in state.triggered_by)
+    assert not any("BTC Hyperliquid" in t for t in state.triggered_by)
+
+
+def test_hyperliquid_failure_falls_back_to_crypto_com_only():
+    # No API-key gate any more: this exercises a genuine transient failure
+    # (network/API), not a missing secret, and confirms it degrades gracefully.
+    state = _check(_const_funding(0.06))  # `_check` wires a failing Hyperliquid mock
+    assert state.btc_hl_ann == 0.0
+    assert state.btc_spread_ann == 0.0
+    assert state.is_on             # carry trigger still fires from Crypto.com alone
+    assert not any("Hyperliquid" in t for t in state.triggered_by)
+
+
+def test_summary_reports_hyperliquid_line_not_binance():
+    summary = _check_with_hl(_const_funding(0.0), _const_funding(0.20)).summary()
+    assert "BTC Hyperliquid" in summary
+    assert "Binance" not in summary

@@ -31,7 +31,7 @@ def _state(is_on: bool) -> RegimeState:
         is_on=is_on,
         btc_cc_ann=0.0,
         btc_carry_ann=0.0,
-        btc_bn_ann=0.0,
+        btc_hl_ann=0.0,
         btc_spread_ann=0.0,
         eth_cc_ann=0.0,
         triggered_by=[],

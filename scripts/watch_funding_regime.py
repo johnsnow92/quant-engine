@@ -1,8 +1,8 @@
 """Funding-regime watcher — the quant-engine wake trigger.
 
-Fetches live funding rates from Crypto.com and Binance (via CoinDesk), evaluates
-whether conditions are favourable for the carry strategy, and fires a Telegram
-alert when the regime is ON.
+Fetches live funding rates from Crypto.com and Hyperliquid (no API key required
+for either), evaluates whether conditions are favourable for the carry strategy,
+and fires a Telegram alert when the regime is ON.
 
 Exits 0  = regime OFF  (GitHub Actions treats this as success, no further steps)
 Exits 1  = regime ON   (workflow can gate downstream jobs on this exit code)

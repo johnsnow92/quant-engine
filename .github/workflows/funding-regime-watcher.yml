@@ -46,7 +46,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          COINDESK_API_KEY: ${{ secrets.COINDESK_API_KEY }}
           ALWAYS_ALERT: ${{ github.event.inputs.always_alert }}
         run: |
           EXTRA_FLAGS="--alert-on-change-only"
