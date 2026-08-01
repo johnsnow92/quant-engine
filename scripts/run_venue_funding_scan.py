@@ -29,6 +29,12 @@ from quant_engine.data.coinalyze import CoinalyzeClient, CoinalyzeError
 # Venues we can plausibly execute on (have/can-get an API): Kraken now,
 # Coinbase via existing CDP creds, Hyperliquid (open API).
 EXECUTABLE = {"Kraken", "Coinbase", "Coinbase International", "Hyperliquid"}
+# EXECUTABLE means "we can reach the API" — NOT permission to trade. Live orders
+# are gated by quant_engine.execution.venue_legality (default-deny, Michigan
+# operator): Coinalyze's "Coinbase" feed is the International (INTX) perp
+# exchange, which that gate explicitly BLOCKS, and Hyperliquid is off-allowlist.
+# Only CFTC-regulated Kraken futures clears the gate today.
+US_LEGAL = {"Kraken"}
 HOURLY_VENUES = {"Kraken", "Hyperliquid", "Coinbase", "Coinbase International",
                  "dYdX", "Vertex", "Aevo", "Paradex"}
 # Coinalyze mis-ingests Kraken funding (inconsistent absolute/relative units per
@@ -114,7 +120,7 @@ def main() -> None:
         rows.append({
             "symbol": sym, "base": meta["base_asset"], "venue": venue,
             "mean_fr_per_int": mean_fr, "ann_funding": ann, "persistence": persistence,
-            "executable": venue in EXECUTABLE,
+            "executable": venue in EXECUTABLE, "us_legal": venue in US_LEGAL,
         })
 
     res = pd.DataFrame(rows)
@@ -123,16 +129,16 @@ def main() -> None:
 
     print(f"\nRichest PERSISTENT funding (|ann| desc, persistence >= {args.min_persistence:.0%}, "
           f"{LOOKBACK_DAYS}d lookback):")
-    hdr = f"{'base':<7}{'venue':<16}{'ann_funding':>13}{'persist':>9}{'side':>16}{'exec':>6}"
+    hdr = f"{'base':<7}{'venue':<16}{'ann_funding':>13}{'persist':>9}{'side':>16}{'exec':>6}{'legal':>7}"
     print(hdr); print("-" * len(hdr))
     for _, r in res.iterrows():
-        side = "short perp (collect)" if r["ann_funding"] > 0 else "long perp (collect)"
         side = "short perp" if r["ann_funding"] > 0 else "long perp"
         print(f"{r['base']:<7}{r['venue']:<16}{r['ann_funding']:>12.1%}{r['persistence']:>9.0%}"
-              f"{side:>16}{'YES' if r['executable'] else '--':>6}")
+              f"{side:>16}{'YES' if r['executable'] else '--':>6}"
+              f"{'YES' if r['us_legal'] else '--':>7}")
 
-    ex = res[res["executable"]]
-    print(f"\nExecutable-venue opportunities (Kraken/Coinbase/Hyperliquid): {len(ex)}")
+    ex = res[res["us_legal"]]
+    print(f"\nLegally executable opportunities (venue_legality gate): {len(ex)}")
     print("Annualized funding is gross, pre-fee, and assumes you HOLD the carry; "
           "net it against that venue's spot+perp round-trip fees and basis risk "
           "(re-run the carry backtest with the candidate's real funding series).")
