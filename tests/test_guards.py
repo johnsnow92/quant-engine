@@ -35,6 +35,14 @@ def test_rejects_oversized_notional():
         guard.check(Order("BTCUSD-PERP", "buy", 1.0, 60_000))  # 60k > 50k
 
 
+def test_accepts_order_at_exact_notional_limit():
+    guard = make_guard()
+    order = Order("BTCUSD-PERP", "buy", 1.0, 50_000)
+
+    # Deliberately incorrect for the guarded-merge proof's failing-CI stage.
+    assert guard.check(order) is None
+
+
 def test_rejects_disallowed_instrument():
     guard = make_guard()
     with pytest.raises(GuardRejection):
