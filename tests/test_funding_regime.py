@@ -48,6 +48,11 @@ def _check(cc_btc: pd.DataFrame, cc_eth: pd.DataFrame | None = None, **kwargs) -
         return check_regime(**kwargs)
 
 
+def _has_trigger(state: RegimeState, prefix: str) -> bool:
+    """Return whether a structured trigger label starts with ``prefix``."""
+    return any(trigger.startswith(prefix) for trigger in state.triggered_by)
+
+
 # ---------------------------------------------------------------------------
 # Carry trigger (5% APR / 7d) — the recalibration this change is about
 # ---------------------------------------------------------------------------
@@ -56,9 +61,9 @@ def test_carry_regime_on_at_six_percent():
     state = _check(_const_funding(0.06))
     assert state.is_on
     assert state.btc_carry_ann == pytest.approx(0.06, abs=1e-6)
-    assert any("carry" in t for t in state.triggered_by)
+    assert _has_trigger(state, "BTC carry ")
     # 6% is below the 15% directional hurdle, so ONLY carry fires.
-    assert not any("Crypto.com" in t for t in state.triggered_by)
+    assert not _has_trigger(state, "BTC Crypto.com ")
 
 
 def test_carry_regime_off_below_five_percent():
@@ -72,7 +77,7 @@ def test_carry_regime_on_at_exact_five_percent_boundary():
     state = _check(_const_funding(0.05))
     assert state.is_on
     assert state.btc_carry_ann == pytest.approx(0.05, abs=1e-6)
-    assert any("carry" in t for t in state.triggered_by)
+    assert _has_trigger(state, "BTC carry ")
 
 
 def test_carry_uses_7d_window_not_24h():
@@ -81,8 +86,8 @@ def test_carry_uses_7d_window_not_24h():
     assert state.is_on
     assert state.btc_cc_ann == pytest.approx(0.20, abs=1e-6)     # 24h tail
     assert state.btc_carry_ann < 0.05                            # 7d tail
-    assert any("Crypto.com" in t for t in state.triggered_by)
-    assert not any("carry" in t for t in state.triggered_by)
+    assert _has_trigger(state, "BTC Crypto.com ")
+    assert not _has_trigger(state, "BTC carry ")
 
 
 # ---------------------------------------------------------------------------
@@ -92,15 +97,15 @@ def test_carry_uses_7d_window_not_24h():
 def test_negative_funding_does_not_trigger_carry():
     state = _check(_const_funding(-0.06))
     assert state.btc_carry_ann == pytest.approx(-0.06, abs=1e-6)
-    assert not any("carry" in t for t in state.triggered_by)
+    assert not _has_trigger(state, "BTC carry ")
     assert state.is_on is False   # |-6%| < 15% directional too
 
 
 def test_large_negative_triggers_directional_but_not_carry():
     state = _check(_const_funding(-0.20))
     assert state.is_on                                      # |-20%| >= 15% directional
-    assert any("Crypto.com" in t for t in state.triggered_by)
-    assert not any("carry" in t for t in state.triggered_by)
+    assert _has_trigger(state, "BTC Crypto.com ")
+    assert not _has_trigger(state, "BTC carry ")
 
 
 # ---------------------------------------------------------------------------
