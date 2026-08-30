@@ -39,8 +39,7 @@ def test_accepts_order_at_exact_notional_limit():
     guard = make_guard()
     order = Order("BTCUSD-PERP", "buy", 1.0, 50_000)
 
-    # Deliberately incorrect for the guarded-merge proof's failing-CI stage.
-    assert guard.check(order) is None
+    assert guard.check(order) is order
 
 
 def test_rejects_disallowed_instrument():
