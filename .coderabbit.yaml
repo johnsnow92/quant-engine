@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: true
+  review_progress: true
+  fail_commit_status: true
+  enable_prompt_for_ai_agents: true
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Review only the requested outcome. Flag unrelated refactors, generated output, dependency churn, secrets in git, unverified claims, and weakened tests.
+    - path: ".github/workflows/**"
+      instructions: |
+        Fail closed on workflow permission expansion, mutable third-party action refs, secret exposure, or merge/release/deploy behavior that can run without explicit authorization.
+
+pre_merge_checks:
+  title:
+    mode: warning
+  description:
+    mode: warning
