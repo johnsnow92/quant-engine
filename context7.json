@@ -3,9 +3,7 @@
   "projectTitle": "quant-engine",
   "description": "Python toolkit for cryptocurrency market data, funding-aware backtesting, carry-strategy research, and guarded paper trading.",
   "branch": "main",
-  "folders": [
-    "lean"
-  ],
+  "folders": [],
   "excludeFolders": [
     "docs/plans",
     "data",
