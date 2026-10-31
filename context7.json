@@ -1,0 +1,29 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "quant-engine",
+  "description": "Python toolkit for cryptocurrency market data, funding-aware backtesting, carry-strategy research, and guarded paper trading.",
+  "branch": "main",
+  "folders": [
+    "lean"
+  ],
+  "excludeFolders": [
+    "docs/plans",
+    "data",
+    "tests",
+    ".github"
+  ],
+  "excludeFiles": [
+    "CLAUDE.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "LICENSE.md"
+  ],
+  "rules": [
+    "Use Python 3.12 and uv for this package.",
+    "Keep strategy signals separate from fees, funding accounting, and execution.",
+    "Shift positions to avoid look-ahead bias in backtests.",
+    "Route every order through PreTradeGuard.",
+    "Use the paper broker for examples; live execution requires separate explicit authorization.",
+    "Verify each venue's funding units and settlement intervals before interpreting carry results."
+  ]
+}
