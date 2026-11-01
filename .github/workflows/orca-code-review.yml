@@ -160,6 +160,20 @@ jobs:
             console.error('Orca review requires valid exhaustive dashboard settings; refusing fallback.');
             process.exit(1);
           };
+          // The pinned settings writer catches write errors. Terminate before that catch
+          // can leave a missing or stale settings file for the Bash driver to consume.
+          const writeFileOriginal = fs.writeFileSync;
+          fs.writeFileSync = function (file, ...args) {
+            try {
+              return writeFileOriginal.call(this, file, ...args);
+            } catch (error) {
+              if (process.env.SETTINGS_JSON && file === process.env.SETTINGS_JSON) {
+                console.error('Orca settings file write failed; refusing fallback.');
+                process.exit(1);
+              }
+              throw error;
+            }
+          };
           const severitySet = (value) => typeof value === 'string'
             ? [...new Set(value.split(',').map(x => x.trim().toUpperCase()).filter(Boolean))].sort().join(',')
             : null;
@@ -211,6 +225,17 @@ jobs:
           cat > "$RUNNER_TEMP/orca-engine-env.sh" <<'ENV'
           # Loaded only for vendor Bash steps, after any setup-node PATH changes.
           export PATH="$RUNNER_TEMP/orca-engine-bin:$PATH"
+
+          # In the SHA-pinned action, setting() calls printf only after a Node read or
+          # JSON-parse failure. Fail that command substitution instead of emitting a
+          # weaker default; the runner's bash -e then stops the settings step.
+          printf() {
+            if [[ "${FUNCNAME[1]-}" == setting ]]; then
+              builtin printf '%s\n' 'Orca settings read failed; refusing fallback.' >&2
+              return 1
+            fi
+            builtin printf "$@"
+          }
           ENV
       - id: orca
         uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
