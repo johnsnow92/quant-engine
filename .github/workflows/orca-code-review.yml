@@ -40,18 +40,18 @@ jobs:
           python3 -I - <<'PY'
           import json, os, re, urllib.request
           from urllib.parse import quote
-          
+
           repo = os.environ['GITHUB_REPOSITORY']
           api = os.environ['GITHUB_API_URL']
           run_url = os.environ['ORCA_RUN_URL']
-          
+
           def request(path, data=None):
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
               with urllib.request.urlopen(req, timeout=30) as response:
                   return json.load(response)
-          
+
           with open(os.environ['GITHUB_EVENT_PATH']) as source:
               event = json.load(source)
           manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
@@ -100,19 +100,19 @@ jobs:
         run: |
           python3 -I - <<'PY'
           import json, os, subprocess, urllib.request
-          
+
           repo = os.environ['GITHUB_REPOSITORY']
           api = os.environ['GITHUB_API_URL']
           sha = os.environ['ORCA_HEAD_SHA']
           run_url = os.environ['ORCA_RUN_URL']
-          
+
           def request(path, data=None):
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
               with urllib.request.urlopen(req, timeout=30) as response:
                   return json.load(response)
-          
+
           # A superseded run must never overwrite the status owned by a newer run.
           statuses = request(f'/repos/{repo}/commits/{sha}/statuses?per_page=100')
           latest = next((s for s in statuses if s['context'] == 'OrcaCode verdict'), None)
