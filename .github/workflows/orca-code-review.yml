@@ -183,25 +183,30 @@ jobs:
           state = 'failure'
           description = 'Review failed, was cancelled, or found blocking issues.'
           if os.environ['ORCA_OUTCOME'] == 'success':
-              with open(os.environ['ORCA_SETTINGS_RECEIPT']) as source:
-                  receipt = json.load(source)
+              try:
+                  with open(os.environ['ORCA_SETTINGS_RECEIPT']) as source:
+                      receipt = json.load(source)
+              except (OSError, ValueError):
+                  receipt = None
               if receipt != {'repository': repo, 'validated': True}:
-                  raise SystemExit('The dashboard settings were not validated for this repository.')
-              # The composite resolves refs internally. Verify what it actually checked out,
-              # catching a head change between our preflight and its issue-comment lookup.
-              result = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'HEAD'], capture_output=True, text=True)
-              base_ref = os.environ['ORCA_BASE_REF']
-              base_sha = os.environ['ORCA_BASE_SHA']
-              base = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'refs/remotes/origin/' + base_ref], capture_output=True, text=True)
-              pr = request(f"/repos/{repo}/pulls/{os.environ['ORCA_PR_NUMBER']}")
-              current_default = request(f'/repos/{repo}')['default_branch']
-              unchanged = pr['state'] == 'open' and pr['head']['sha'] == sha and pr['base']['ref'] == base_ref == current_default and pr['base']['sha'] == base_sha
-              if unchanged and result.returncode == 0 and result.stdout.strip() == sha and base.returncode == 0 and base.stdout.strip() == base_sha:
-                  state = 'success'
-                  description = 'Review completed; no configured blocking findings.'
-              else:
                   state = 'error'
-                  description = 'The reviewed base/head changed or checkout was skipped.'
+                  description = 'Dashboard settings validation receipt is missing or invalid.'
+              else:
+                  # The composite resolves refs internally. Verify what it actually checked out,
+                  # catching a head change between our preflight and its issue-comment lookup.
+                  result = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'HEAD'], capture_output=True, text=True)
+                  base_ref = os.environ['ORCA_BASE_REF']
+                  base_sha = os.environ['ORCA_BASE_SHA']
+                  base = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'refs/remotes/origin/' + base_ref], capture_output=True, text=True)
+                  pr = request(f"/repos/{repo}/pulls/{os.environ['ORCA_PR_NUMBER']}")
+                  current_default = request(f'/repos/{repo}')['default_branch']
+                  unchanged = pr['state'] == 'open' and pr['head']['sha'] == sha and pr['base']['ref'] == base_ref == current_default and pr['base']['sha'] == base_sha
+                  if unchanged and result.returncode == 0 and result.stdout.strip() == sha and base.returncode == 0 and base.stdout.strip() == base_sha:
+                      state = 'success'
+                      description = 'Review completed; no configured blocking findings.'
+                  else:
+                      state = 'error'
+                      description = 'The reviewed base/head changed or checkout was skipped.'
           request(f'/repos/{repo}/statuses/{sha}', {'context': status_context, 'target_url': run_url, 'state': state, 'description': description})
           if state != 'success':
               raise SystemExit(description)
