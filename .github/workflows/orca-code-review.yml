@@ -10,6 +10,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write # clean/fallback PR comments
+  statuses: write # publish the verdict on the reviewed PR commit
 
 jobs:
   review:
@@ -28,10 +29,108 @@ jobs:
           startsWith(github.event.comment.body, '@orcacode review')) &&
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     steps:
-      - uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
+      - name: Authorize review and start PR commit verdict
+        id: verdict
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORCA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, urllib.request
+          from urllib.parse import quote
+          
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ['GITHUB_API_URL']
+          run_url = os.environ['ORCA_RUN_URL']
+          
+          def request(path, data=None):
+              req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+          
+          with open(os.environ['GITHUB_EVENT_PATH']) as source:
+              event = json.load(source)
+          manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
+          number = event['issue']['number'] if manual else event['pull_request']['number']
+          if manual:
+              actor = quote(event['comment']['user']['login'], safe='')
+              permission = request(f'/repos/{repo}/collaborators/{actor}/permission')['permission']
+              if permission not in ('write', 'maintain', 'admin'):
+                  raise SystemExit('Manual reviews require repository write permission.')
+          elif event['pull_request']['author_association'] not in ('OWNER', 'MEMBER', 'COLLABORATOR'):
+              raise SystemExit('Automatic review author is outside the configured allowlist.')
+          pr = request(f'/repos/{repo}/pulls/{number}')
+          if pr['state'] != 'open':
+              raise SystemExit('The pull request is no longer open.')
+          sha = pr['head']['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('Invalid PR head SHA.')
+          if not manual and event['pull_request']['head']['sha'] != sha:
+              raise SystemExit('This event was superseded by a newer PR head.')
+          status = {'context': 'OrcaCode verdict', 'target_url': run_url}
+          # The pinned vendor checkout is only validated for branches in this repository.
+          if not pr['head']['repo'] or pr['head']['repo']['full_name'] != repo:
+              request(f'/repos/{repo}/statuses/{sha}', dict(status, state='error', description='Fork review is unsupported by this pinned integration.'))
+              raise SystemExit('Fork reviews require a separately validated vendor checkout path.')
+          request(f'/repos/{repo}/statuses/{sha}', dict(status, state='pending', description='Orca review is running for this commit.'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'head_sha={sha}\n')
+          PY
+      - id: orca
+        uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
         with:
           orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
           settings: "true"
           block-on: "P0,P1"
           on-oversized-diff: "fail"
           auto-review-authors: "OWNER,MEMBER,COLLABORATOR"
+      - name: Publish PR commit verdict
+        if: always() && steps.verdict.outputs.head_sha != ''
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORCA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ORCA_HEAD_SHA: ${{ steps.verdict.outputs.head_sha }}
+          ORCA_OUTCOME: ${{ steps.orca.outcome }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, subprocess, urllib.request
+          
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ['GITHUB_API_URL']
+          sha = os.environ['ORCA_HEAD_SHA']
+          run_url = os.environ['ORCA_RUN_URL']
+          
+          def request(path, data=None):
+              req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+          
+          # A superseded run must never overwrite the status owned by a newer run.
+          statuses = request(f'/repos/{repo}/commits/{sha}/statuses?per_page=100')
+          latest = next((s for s in statuses if s['context'] == 'OrcaCode verdict'), None)
+          if not latest or latest['target_url'] != run_url:
+              raise SystemExit('This run no longer owns the verdict status.')
+          state = 'failure'
+          description = 'Review failed, was cancelled, or found blocking issues.'
+          if os.environ['ORCA_OUTCOME'] == 'success':
+              # The composite resolves refs internally. Verify what it actually checked out,
+              # catching a head change between our preflight and its issue-comment lookup.
+              result = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'HEAD'], capture_output=True, text=True)
+              if result.returncode == 0 and result.stdout.strip() == sha:
+                  state = 'success'
+                  description = 'Review completed; no configured blocking findings.'
+              else:
+                  state = 'error'
+                  description = 'Review skipped checkout or reviewed a different commit.'
+          request(f'/repos/{repo}/statuses/{sha}', {'context': 'OrcaCode verdict', 'target_url': run_url, 'state': state, 'description': description})
+          if state != 'success':
+              raise SystemExit(description)
+          PY
