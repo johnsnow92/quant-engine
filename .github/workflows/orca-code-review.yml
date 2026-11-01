@@ -87,12 +87,55 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'head_sha={sha}\nbase_ref={base_ref}\nbase_sha={base_sha}\npr_number={number}\nstatus_context={status_context}\n')
           PY
+      - name: Validate dashboard settings without fallback
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          cat > "$RUNNER_TEMP/orca-settings-guard.mjs" <<'JS'
+          // Loaded only for the pinned vendor action. Reject settings fallback before review.
+          import fs from 'node:fs';
+          const fetchOriginal = globalThis.fetch;
+          const fail = () => {
+            console.error('Orca review requires valid exhaustive dashboard settings; refusing fallback.');
+            process.exit(1);
+          };
+          const severitySet = (value) => typeof value === 'string'
+            ? [...new Set(value.split(',').map(x => x.trim().toUpperCase()).filter(Boolean))].sort().join(',')
+            : null;
+          globalThis.fetch = async (input, options) => {
+            const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+            if (url.origin !== 'https://api.orcarouter.ai' || url.pathname !== '/api/code_review/settings') {
+              return fetchOriginal(input, options);
+            }
+            try {
+              if (url.searchParams.get('repo') !== process.env.ORCA_REVIEW_REPOSITORY) return fail();
+              const response = await fetchOriginal(input, options);
+              if (!response.ok) return fail();
+              const body = await response.clone().json();
+              const data = body?.data;
+              if (body?.success !== true || !data || data.auto_review !== true ||
+                  data.trigger !== 'every_push' || data.exhaustive !== true || data.quiet !== false ||
+                  severitySet(data.fix_first) === null || !/^([P][0-3](,[P][0-3])*)?$/.test(severitySet(data.fix_first)) || severitySet(data.block_on) !== 'P0,P1' ||
+                  severitySet(data.report_on) !== 'P0,P1,P2,P3' || typeof data.rubric !== 'string') return fail();
+              fs.writeFileSync(process.env.ORCA_SETTINGS_RECEIPT,
+                JSON.stringify({repository: process.env.ORCA_REVIEW_REPOSITORY, validated: true}), {mode: 0o600});
+              return response;
+            } catch {
+              return fail();
+            }
+          };
+          JS
       - id: orca
         uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
+        env:
+          NODE_OPTIONS: --import=${{ runner.temp }}/orca-settings-guard.mjs
+          ORCA_REVIEW_REPOSITORY: ${{ github.repository }}
+          ORCA_SETTINGS_RECEIPT: ${{ runner.temp }}/orca-settings-${{ github.run_id }}-${{ github.run_attempt }}.json
         with:
           orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
           settings: "true"
-          block-on: "P0,P1"
+          fix-first: "" # exhaustive passes must not stop after an early finding
+          block-on: "P1,P0" # explicit non-default ordering enforces P0/P1 regardless of dashboard
           on-oversized-diff: "fail"
           auto-review-authors: "" # repository write permission is checked before this step
       - name: Publish PR commit verdict
@@ -107,6 +150,7 @@ jobs:
           ORCA_BASE_REF: ${{ steps.verdict.outputs.base_ref }}
           ORCA_BASE_SHA: ${{ steps.verdict.outputs.base_sha }}
           ORCA_PR_NUMBER: ${{ steps.verdict.outputs.pr_number }}
+          ORCA_SETTINGS_RECEIPT: ${{ runner.temp }}/orca-settings-${{ github.run_id }}-${{ github.run_attempt }}.json
           ORCA_OUTCOME: ${{ steps.orca.outcome }}
         run: |
           python3 -I - <<'PY'
@@ -139,6 +183,10 @@ jobs:
           state = 'failure'
           description = 'Review failed, was cancelled, or found blocking issues.'
           if os.environ['ORCA_OUTCOME'] == 'success':
+              with open(os.environ['ORCA_SETTINGS_RECEIPT']) as source:
+                  receipt = json.load(source)
+              if receipt != {'repository': repo, 'validated': True}:
+                  raise SystemExit('The dashboard settings were not validated for this repository.')
               # The composite resolves refs internally. Verify what it actually checked out,
               # catching a head change between our preflight and its issue-comment lookup.
               result = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'HEAD'], capture_output=True, text=True)
