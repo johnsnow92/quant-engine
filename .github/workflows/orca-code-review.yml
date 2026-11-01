@@ -186,9 +186,36 @@ jobs:
             }
           };
           JS
+      - name: Set bounded engine task deadline
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/orca-engine-bin"
+          cat > "$RUNNER_TEMP/orca-engine-bin/ocr" <<'ENGINE'
+          #!/usr/bin/env python3
+          import os
+          import sys
+
+          # Delegate to the installed pinned CLI, excluding this shim from executable lookup.
+          wrapper_dir = os.path.realpath(os.path.dirname(__file__))
+          os.environ['PATH'] = os.pathsep.join(
+              item for item in os.environ['PATH'].split(os.pathsep)
+              if os.path.realpath(item) != wrapper_dir
+          )
+          args = ['ocr', *sys.argv[1:]]
+          if len(args) > 1 and args[1] == 'review':
+              args[2:2] = ['--timeout', '30']
+          os.execvpe('ocr', args, os.environ)
+          ENGINE
+          chmod 755 "$RUNNER_TEMP/orca-engine-bin/ocr"
+          cat > "$RUNNER_TEMP/orca-engine-env.sh" <<'ENV'
+          # Loaded only for vendor Bash steps, after any setup-node PATH changes.
+          export PATH="$RUNNER_TEMP/orca-engine-bin:$PATH"
+          ENV
       - id: orca
         uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
         env:
+          BASH_ENV: ${{ runner.temp }}/orca-engine-env.sh
           CR_UPSTREAM_TIMEOUT_MS: "600000" # model responses can exceed the proxy's 120s default
           NODE_OPTIONS: --import=${{ runner.temp }}/orca-settings-guard.mjs
           ORCA_REVIEW_REPOSITORY: ${{ github.repository }}
