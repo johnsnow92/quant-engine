@@ -13,12 +13,14 @@ permissions:
   statuses: write # publish the verdict on the reviewed PR commit
 
 jobs:
-  review:
+  authorize:
     runs-on: ubuntu-latest
-    concurrency:
-      # Serialize status publication across PRs that share the same head SHA.
-      group: ${{ github.workflow }}-repository
-      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+      base_ref: ${{ steps.authorize.outputs.base_ref }}
     if: |
       (github.event_name == 'pull_request_target' &&
         (github.event.action != 'edited' || github.event.changes.base)) ||
@@ -29,8 +31,8 @@ jobs:
           startsWith(github.event.comment.body, '@orcacode-review') ||
           startsWith(github.event.comment.body, '@orcacode review')))
     steps:
-      - name: Authorize review and start PR commit verdict
-        id: verdict
+      - name: Authorize before entering the review queue
+        id: authorize
         shell: bash
         working-directory: ${{ runner.temp }}
         env:
@@ -40,18 +42,18 @@ jobs:
           python3 -I - <<'PY'
           import json, os, re, urllib.request
           from urllib.parse import quote
-
+          
           repo = os.environ['GITHUB_REPOSITORY']
           api = os.environ['GITHUB_API_URL']
           run_url = os.environ['ORCA_RUN_URL']
-
+          
           def request(path, data=None):
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
               with urllib.request.urlopen(req, timeout=30) as response:
                   return json.load(response)
-
+          
           with open(os.environ['GITHUB_EVENT_PATH']) as source:
               event = json.load(source)
           manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
@@ -70,6 +72,65 @@ jobs:
               raise SystemExit('This event was superseded by a newer PR head.')
           base_ref = pr['base']['ref']
           base_sha = pr['base']['sha']
+          # This job has no concurrency lock and cannot publish a verdict.
+          # Reject unauthorized requests before they can occupy a review queue.
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'head_sha={sha}\nbase_ref={base_ref}\n')
+          PY
+  review:
+    needs: authorize
+    runs-on: ubuntu-latest
+    concurrency:
+      # Only authorized jobs enter a queue; unrelated commit verdicts run independently.
+      group: ${{ github.workflow }}-${{ needs.authorize.outputs.head_sha }}-${{ needs.authorize.outputs.base_ref }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Authorize review and start PR commit verdict
+        id: verdict
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          ORCA_AUTHORIZED_SHA: ${{ needs.authorize.outputs.head_sha }}
+          ORCA_AUTHORIZED_BASE: ${{ needs.authorize.outputs.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+          ORCA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, urllib.request
+          from urllib.parse import quote
+          
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ['GITHUB_API_URL']
+          run_url = os.environ['ORCA_RUN_URL']
+          
+          def request(path, data=None):
+              req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+          
+          with open(os.environ['GITHUB_EVENT_PATH']) as source:
+              event = json.load(source)
+          manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
+          number = event['issue']['number'] if manual else event['pull_request']['number']
+          actor = quote((event['comment'] if manual else event['pull_request'])['user']['login'], safe='')
+          permission = request(f'/repos/{repo}/collaborators/{actor}/permission')['permission']
+          if permission not in ('write', 'maintain', 'admin'):
+              raise SystemExit('Reviews require repository write permission.')
+          pr = request(f'/repos/{repo}/pulls/{number}')
+          if pr['state'] != 'open':
+              raise SystemExit('The pull request is no longer open.')
+          sha = pr['head']['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('Invalid PR head SHA.')
+          if not manual and event['pull_request']['head']['sha'] != sha:
+              raise SystemExit('This event was superseded by a newer PR head.')
+          base_ref = pr['base']['ref']
+          base_sha = request(f'/repos/{repo}/git/ref/heads/{quote(base_ref, safe="")}')['object']['sha']
+          if (sha, base_ref) != (os.environ['ORCA_AUTHORIZED_SHA'], os.environ['ORCA_AUTHORIZED_BASE']):
+              raise SystemExit('PR head or target changed while waiting for its review lock.')
           status_context = 'OrcaCode verdict: ' + base_ref
           status = {'context': status_context, 'target_url': run_url}
           if base_ref != request(f'/repos/{repo}')['default_branch']:
@@ -77,7 +138,7 @@ jobs:
               raise SystemExit('This integration reviews only the repository default branch.')
           if not re.fullmatch(r'[0-9a-f]{40}', base_sha):
               raise SystemExit('Invalid PR base SHA.')
-          if not manual and (event['pull_request']['base']['ref'], event['pull_request']['base']['sha']) != (base_ref, base_sha):
+          if not manual and event['pull_request']['base']['ref'] != base_ref:
               raise SystemExit('This event was superseded by a different PR base.')
           # The pinned vendor checkout is only validated for branches in this repository.
           if not pr['head']['repo'] or pr['head']['repo']['full_name'] != repo:
@@ -155,20 +216,21 @@ jobs:
         run: |
           python3 -I - <<'PY'
           import json, os, subprocess, urllib.request
-
+          from urllib.parse import quote
+          
           repo = os.environ['GITHUB_REPOSITORY']
           api = os.environ['GITHUB_API_URL']
           sha = os.environ['ORCA_HEAD_SHA']
           run_url = os.environ['ORCA_RUN_URL']
           status_context = os.environ['ORCA_STATUS_CONTEXT']
-
+          
           def request(path, data=None):
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
               with urllib.request.urlopen(req, timeout=30) as response:
                   return json.load(response)
-
+          
           # A superseded run must never overwrite the status owned by a newer run.
           page = 1
           latest = None
@@ -200,7 +262,8 @@ jobs:
                   base = subprocess.run(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'refs/remotes/origin/' + base_ref], capture_output=True, text=True)
                   pr = request(f"/repos/{repo}/pulls/{os.environ['ORCA_PR_NUMBER']}")
                   current_default = request(f'/repos/{repo}')['default_branch']
-                  unchanged = pr['state'] == 'open' and pr['head']['sha'] == sha and pr['base']['ref'] == base_ref == current_default and pr['base']['sha'] == base_sha
+                  current_base = request(f'/repos/{repo}/git/ref/heads/{quote(base_ref, safe="")}')['object']['sha']
+                  unchanged = pr['state'] == 'open' and pr['head']['sha'] == sha and pr['base']['ref'] == base_ref == current_default and current_base == base_sha
                   if unchanged and result.returncode == 0 and result.stdout.strip() == sha and base.returncode == 0 and base.stdout.strip() == base_sha:
                       state = 'success'
                       description = 'Review completed; no configured blocking findings.'
