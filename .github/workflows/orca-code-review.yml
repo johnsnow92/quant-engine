@@ -26,8 +26,7 @@ jobs:
         (startsWith(github.event.comment.body, '/orcacode-review') ||
           startsWith(github.event.comment.body, '/orcacode review') ||
           startsWith(github.event.comment.body, '@orcacode-review') ||
-          startsWith(github.event.comment.body, '@orcacode review')) &&
-        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+          startsWith(github.event.comment.body, '@orcacode review')))
     steps:
       - name: Authorize review and start PR commit verdict
         id: verdict
@@ -56,13 +55,10 @@ jobs:
               event = json.load(source)
           manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
           number = event['issue']['number'] if manual else event['pull_request']['number']
-          if manual:
-              actor = quote(event['comment']['user']['login'], safe='')
-              permission = request(f'/repos/{repo}/collaborators/{actor}/permission')['permission']
-              if permission not in ('write', 'maintain', 'admin'):
-                  raise SystemExit('Manual reviews require repository write permission.')
-          elif event['pull_request']['author_association'] not in ('OWNER', 'MEMBER', 'COLLABORATOR'):
-              raise SystemExit('Automatic review author is outside the configured allowlist.')
+          actor = quote((event['comment'] if manual else event['pull_request'])['user']['login'], safe='')
+          permission = request(f'/repos/{repo}/collaborators/{actor}/permission')['permission']
+          if permission not in ('write', 'maintain', 'admin'):
+              raise SystemExit('Reviews require repository write permission.')
           pr = request(f'/repos/{repo}/pulls/{number}')
           if pr['state'] != 'open':
               raise SystemExit('The pull request is no longer open.')
@@ -87,7 +83,7 @@ jobs:
           settings: "true"
           block-on: "P0,P1"
           on-oversized-diff: "fail"
-          auto-review-authors: "OWNER,MEMBER,COLLABORATOR"
+          auto-review-authors: "" # repository write permission is checked before this step
       - name: Publish PR commit verdict
         if: always() && steps.verdict.outputs.head_sha != ''
         shell: bash
