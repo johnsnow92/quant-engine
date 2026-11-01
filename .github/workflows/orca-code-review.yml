@@ -1,0 +1,37 @@
+name: OrcaCode Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write # clean/fallback PR comments
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && 'comment' || 'pr' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
+    if: |
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' || github.event.changes.base)) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (startsWith(github.event.comment.body, '/orcacode-review') ||
+          startsWith(github.event.comment.body, '/orcacode review') ||
+          startsWith(github.event.comment.body, '@orcacode-review') ||
+          startsWith(github.event.comment.body, '@orcacode review')) &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    steps:
+      - uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
+        with:
+          orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
+          settings: "true"
+          block-on: "P0,P1"
+          on-oversized-diff: "fail"
+          auto-review-authors: "OWNER,MEMBER,COLLABORATOR"
