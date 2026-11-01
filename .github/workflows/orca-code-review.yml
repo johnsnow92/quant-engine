@@ -15,7 +15,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && 'comment' || 'pr' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
     if: |
       (github.event_name == 'pull_request_target' &&
