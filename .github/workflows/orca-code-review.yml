@@ -189,6 +189,7 @@ jobs:
       - id: orca
         uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
         env:
+          CR_UPSTREAM_TIMEOUT_MS: "600000" # model responses can exceed the proxy's 120s default
           NODE_OPTIONS: --import=${{ runner.temp }}/orca-settings-guard.mjs
           ORCA_REVIEW_REPOSITORY: ${{ github.repository }}
           ORCA_SETTINGS_RECEIPT: ${{ runner.temp }}/orca-settings-${{ github.run_id }}-${{ github.run_attempt }}.json
