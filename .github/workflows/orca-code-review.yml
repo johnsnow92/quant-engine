@@ -40,7 +40,7 @@ jobs:
           ORCA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 -I - <<'PY'
-          import json, os, re, urllib.request
+          import json, os, re, urllib.request, urllib.error
           from urllib.parse import quote
 
           repo = os.environ['GITHUB_REPOSITORY']
@@ -51,14 +51,21 @@ jobs:
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  return json.load(response)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'GitHub API request failed (HTTP {error.code}); review remains blocked.') from None
+              except urllib.error.URLError:
+                  raise SystemExit('GitHub API network error; review remains blocked.') from None
 
           with open(os.environ['GITHUB_EVENT_PATH']) as source:
               event = json.load(source)
           manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
           number = event['issue']['number'] if manual else event['pull_request']['number']
           actor = quote((event['comment'] if manual else event['pull_request'])['user']['login'], safe='')
+          # This endpoint accepts installation tokens with Metadata: read.
+          # https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
           permission = request(f'/repos/{repo}/collaborators/{actor}/permission')['permission']
           if permission not in ('write', 'maintain', 'admin'):
               raise SystemExit('Reviews require repository write permission.')
@@ -74,6 +81,7 @@ jobs:
           base_sha = pr['base']['sha']
           # This job has no concurrency lock and cannot publish a verdict.
           # Reject unauthorized requests before they can occupy a review queue.
+          # GITHUB_OUTPUT file commands preserve literal percent characters; do not percent-escape refs.
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'head_sha={sha}\nbase_ref={base_ref}\n')
           PY
@@ -84,7 +92,7 @@ jobs:
       # Only authorized jobs enter a queue; unrelated commit verdicts run independently.
       group: ${{ github.workflow }}-${{ needs.authorize.outputs.head_sha }}-${{ needs.authorize.outputs.base_ref }}
       cancel-in-progress: false
-      queue: max
+      queue: max # GitHub supports up to 100 pending jobs; group remains head/base scoped.
     steps:
       - name: Authorize review and start PR commit verdict
         id: verdict
@@ -97,7 +105,7 @@ jobs:
           ORCA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 -I - <<'PY'
-          import json, os, re, urllib.request
+          import json, os, re, urllib.request, urllib.error
           from urllib.parse import quote
 
           repo = os.environ['GITHUB_REPOSITORY']
@@ -108,14 +116,21 @@ jobs:
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  return json.load(response)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'GitHub API request failed (HTTP {error.code}); review remains blocked.') from None
+              except urllib.error.URLError:
+                  raise SystemExit('GitHub API network error; review remains blocked.') from None
 
           with open(os.environ['GITHUB_EVENT_PATH']) as source:
               event = json.load(source)
           manual = os.environ['GITHUB_EVENT_NAME'] == 'issue_comment'
           number = event['issue']['number'] if manual else event['pull_request']['number']
           actor = quote((event['comment'] if manual else event['pull_request'])['user']['login'], safe='')
+          # This endpoint accepts installation tokens with Metadata: read.
+          # https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
           permission = request(f'/repos/{repo}/collaborators/{actor}/permission')['permission']
           if permission not in ('write', 'maintain', 'admin'):
               raise SystemExit('Reviews require repository write permission.')
@@ -145,6 +160,7 @@ jobs:
               request(f'/repos/{repo}/statuses/{sha}', dict(status, state='error', description='Fork review is unsupported by this pinned integration.'))
               raise SystemExit('Fork reviews require a separately validated vendor checkout path.')
           request(f'/repos/{repo}/statuses/{sha}', dict(status, state='pending', description='Orca review is running for this commit.'))
+          # GITHUB_OUTPUT file commands preserve literal percent characters; do not percent-escape refs.
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'head_sha={sha}\nbase_ref={base_ref}\nbase_sha={base_sha}\npr_number={number}\nstatus_context={status_context}\n')
           PY
@@ -156,27 +172,53 @@ jobs:
           // Loaded only for the pinned vendor action. Reject settings fallback before review.
           import fs from 'node:fs';
           const fetchOriginal = globalThis.fetch;
+          let validatedPolicy = null;
           const fail = () => {
             console.error('Orca review requires valid exhaustive dashboard settings; refusing fallback.');
             process.exit(1);
           };
-          // The pinned settings writer catches write errors. Terminate before that catch
-          // can leave a missing or stale settings file for the Bash driver to consume.
+          const severitySet = (value) => typeof value === 'string'
+            ? [...new Set(value.split(',').map(x => x.trim().toUpperCase()).filter(Boolean))].sort().join(',')
+            : null;
+          // The pinned Bash driver applies explicit fix-first:"" after loading these fields.
+          // A valid dashboard list cannot override that empty input or enable early stopping.
+          const normalizePolicy = (data) => {
+            if (!data || data.auto_review !== true || data.trigger !== 'every_push' ||
+                data.exhaustive !== true || data.quiet !== false ||
+                severitySet(data.fix_first) === null || !/^([P][0-3](,[P][0-3])*)?$/.test(severitySet(data.fix_first)) ||
+                severitySet(data.block_on) !== 'P0,P1' || severitySet(data.report_on) !== 'P0,P1,P2,P3' ||
+                typeof data.rubric !== 'string') return null;
+            return {
+              auto_review: data.auto_review, trigger: data.trigger, exhaustive: data.exhaustive,
+              quiet: data.quiet, fix_first: severitySet(data.fix_first),
+              block_on: severitySet(data.block_on), report_on: severitySet(data.report_on),
+              rubric: data.rubric.trim() === '' ? '' : data.rubric,
+            };
+          };
+          // The pinned action exports SETTINGS_JSON and passes it unchanged as --out.
+          // Bind the actual writer payload to the validated response before it is persisted:
+          // the vendor also catches decoding errors and can otherwise write weaker defaults.
           const writeFileOriginal = fs.writeFileSync;
           fs.writeFileSync = function (file, ...args) {
+            const settingsFile = process.env.SETTINGS_JSON && file === process.env.SETTINGS_JSON;
+            if (settingsFile) {
+              let writtenPolicy = null;
+              try { writtenPolicy = normalizePolicy(JSON.parse(args[0])); } catch {}
+              if (!validatedPolicy || !writtenPolicy || JSON.stringify(writtenPolicy) !== JSON.stringify(validatedPolicy)) {
+                console.error('Orca settings file does not match the validated policy; refusing fallback.');
+                process.exit(1);
+              }
+            }
             try {
               return writeFileOriginal.call(this, file, ...args);
             } catch (error) {
-              if (process.env.SETTINGS_JSON && file === process.env.SETTINGS_JSON) {
+              if (settingsFile) {
                 console.error('Orca settings file write failed; refusing fallback.');
                 process.exit(1);
               }
               throw error;
             }
           };
-          const severitySet = (value) => typeof value === 'string'
-            ? [...new Set(value.split(',').map(x => x.trim().toUpperCase()).filter(Boolean))].sort().join(',')
-            : null;
           globalThis.fetch = async (input, options) => {
             const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
             if (url.origin !== 'https://api.orcarouter.ai' || url.pathname !== '/api/code_review/settings') {
@@ -187,11 +229,9 @@ jobs:
               const response = await fetchOriginal(input, options);
               if (!response.ok) return fail();
               const body = await response.clone().json();
-              const data = body?.data;
-              if (body?.success !== true || !data || data.auto_review !== true ||
-                  data.trigger !== 'every_push' || data.exhaustive !== true || data.quiet !== false ||
-                  severitySet(data.fix_first) === null || !/^([P][0-3](,[P][0-3])*)?$/.test(severitySet(data.fix_first)) || severitySet(data.block_on) !== 'P0,P1' ||
-                  severitySet(data.report_on) !== 'P0,P1,P2,P3' || typeof data.rubric !== 'string') return fail();
+              const policy = normalizePolicy(body?.data);
+              if (body?.success !== true || !policy) return fail();
+              validatedPolicy = policy;
               fs.writeFileSync(process.env.ORCA_SETTINGS_RECEIPT,
                 JSON.stringify({repository: process.env.ORCA_REVIEW_REPOSITORY, validated: true}), {mode: 0o600});
               return response;
@@ -268,7 +308,7 @@ jobs:
           ORCA_OUTCOME: ${{ steps.orca.outcome }}
         run: |
           python3 -I - <<'PY'
-          import json, os, subprocess, urllib.request
+          import json, os, subprocess, urllib.request, urllib.error
           from urllib.parse import quote
 
           repo = os.environ['GITHUB_REPOSITORY']
@@ -281,8 +321,13 @@ jobs:
               req = urllib.request.Request(api + path, data=None if data is None else json.dumps(data).encode(), headers={
                   'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                   'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  return json.load(response)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'GitHub API request failed (HTTP {error.code}); review remains blocked.') from None
+              except urllib.error.URLError:
+                  raise SystemExit('GitHub API network error; review remains blocked.') from None
 
           # A superseded run must never overwrite the status owned by a newer run.
           page = 1
